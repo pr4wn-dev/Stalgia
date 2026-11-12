@@ -48,9 +48,31 @@ Stalgia.exe --window --wallpaper myco
 
 ### Unsigned builds
 
-Release builds are unsigned. Windows SmartScreen may say **Windows protected your PC**. Choose **More info**, then **Run anyway**. If the file was downloaded from the internet, unblock it in **Properties**.
+Current release builds are unsigned while a SignPath Foundation application is pending. Windows SmartScreen may say **Windows protected your PC**. Choose **More info**, then **Run anyway**. If the file was downloaded from the internet, unblock it in **Properties**.
 
-Windows 11 Smart App Control, when it is on and enforced, can block an unsigned exe with Code Integrity events such as 3077, 3033, and 3118 (`An Application Control policy has blocked this file`). That is a signing-policy block, not a fault in the wallpaper. Code signing via [SignPath](https://signpath.io/) is planned. The GitHub Actions artifact is named `Stalgia-unsigned` so a signing step can be inserted before the release is published.
+Windows 11 Smart App Control, when it is on and enforced, can block an unsigned exe with Code Integrity events such as 3077, 3033, and 3118 (`An Application Control policy has blocked this file`). That is a signing-policy block, not a fault in the wallpaper.
+
+Once a signed release is published, Windows releases will use free code signing provided by SignPath.io, certificate by SignPath Foundation. See [Code signing policy](#code-signing-policy). The GitHub Actions artifact is named `Stalgia-unsigned` so a signing step can run before the release is published.
+
+## Code signing policy
+
+Free code signing provided by SignPath.io, certificate by SignPath Foundation.
+
+Windows release binaries (`Stalgia-<version>.exe` on [GitHub Releases](https://github.com/pr4wn-dev/Stalgia/releases)) will be signed only after a SignPath Foundation application is approved. Until then, published builds remain unsigned. Only binaries built from this repository by the GitHub Actions release workflow are submitted for signing. The private key is held by SignPath on an HSM; this project does not store it. Each signing request requires manual approval by an approver. Local or developer-machine builds are not signed.
+
+### Team roles
+
+This is a single-maintainer project. All of the following roles are held by [pr4wn-dev](https://github.com/pr4wn-dev):
+
+- **Authors (committers):** people trusted to modify the source code without additional reviews — [pr4wn-dev](https://github.com/pr4wn-dev).
+- **Reviewers:** changes proposed by people who are not committers (for example, pull requests) are reviewed by [pr4wn-dev](https://github.com/pr4wn-dev) before merge.
+- **Approvers:** each signing request is approved by [pr4wn-dev](https://github.com/pr4wn-dev).
+
+## Privacy policy
+
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
+Settings, logs, and crash reports stay on the local PC under `%APPDATA%\Stalgia`. Optional features that change the system (Start with Windows, a per-user copy via `--install`, and hiding desktop icons) are off until the user turns them on, and can be reversed with `--uninstall` or the in-app controls.
 
 ## Command line
 
