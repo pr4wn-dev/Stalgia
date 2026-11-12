@@ -70,6 +70,10 @@ public:
     ID3D11PixelShader* fallbackShader() const { return m_fallbackPs.get(); }
     void drawFullscreen(ID3D11PixelShader* ps, const FullscreenCB& cb);
     void drawFullscreen(ID3D11PixelShader* ps, const void* data, UINT bytes);
+    // Photoreal backdrop for this effect and preset. padA of the fullscreen
+    // constants is the layer mask (0 when no plates are on disk).
+    void bindPlates(const wchar_t* effect, const wchar_t* preset);
+    float plateMask() const { return m_plateMask; }
     void setViewport(int x, int y, int w, int h);
     bool isWarp() const { return m_warp; }
     void beginGpuTime();
@@ -153,6 +157,10 @@ private:
     ComPtr<ID3D11Texture2D> m_noiseTex;
     ComPtr<ID3D11ShaderResourceView> m_noiseSrv;
     ComPtr<ID3D11SamplerState> m_noiseSamp;
+    ComPtr<ID3D11ShaderResourceView> m_plateSrv[3];
+    std::wstring m_plateKey;
+    ID3D11Device* m_plateDevice = nullptr;
+    float m_plateMask = 0.0f;
     ComPtr<ID3D11Texture2D> m_lumaStage;
     ComPtr<ID3D11Texture2D> m_captureStage;
     struct GpuSlot {

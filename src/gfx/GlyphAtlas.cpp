@@ -167,13 +167,15 @@ bool GlyphAtlas::build(ID3D11Device* device, int cellSize, int glyphSet, const s
     m_texW = m_cols * m_cell;
     m_texH = m_rows * m_cell;
 
+    // Draw at 2x and box-filter down so small kana stay smooth instead of GDI bitmaps.
+    const int scale = 2;
     GdiBitmap gdi;
-    if (!gdi.create(m_texW, m_texH)) {
+    if (!gdi.create(m_texW * scale, m_texH * scale)) {
         LOG_ERR("Failed to create GDI DIB for glyph atlas");
         return false;
     }
 
-    HFONT font = tryCreateFont(std::max(7, m_cell - 1));
+    HFONT font = tryCreateFont(std::max(7, m_cell * scale - 2));
     if (!font) {
         LOG_ERR("Failed to create atlas font");
         return false;
@@ -186,12 +188,12 @@ bool GlyphAtlas::build(ID3D11Device* device, int cellSize, int glyphSet, const s
     XFORM identity{1, 0, 0, 1, 0, 0};
 
     for (int i = 0; i < count; ++i) {
-        const int cx = (i % m_cols) * m_cell;
-        const int cy = (i / m_cols) * m_cell;
+        const int cx = (i % m_cols) * m_cell * scale;
+        const int cy = (i / m_cols) * m_cell * scale;
         wchar_t ch = m_charset[(size_t)i];
-        RECT r{cx, cy, cx + m_cell, cy + m_cell};
+        RECT r{cx, cy, cx + m_cell * scale, cy + m_cell * scale};
         if (i >= m_flipFrom) {
-            XFORM xf{-1.0f, 0, 0, 1.0f, (float)(2 * cx + m_cell), 0};
+            XFORM xf{-1.0f, 0, 0, 1.0f, (float)(2 * cx + m_cell * scale), 0};
             SetWorldTransform(gdi.dc, &xf);
         } else {
             SetWorldTransform(gdi.dc, &identity);
@@ -206,11 +208,17 @@ bool GlyphAtlas::build(ID3D11Device* device, int cellSize, int glyphSet, const s
     // Convert BGRA to R8 (coverage) — GDI writes BGRA, white glyphs on black.
     std::vector<unsigned char> r8((size_t)m_texW * m_texH);
     const unsigned char* src = static_cast<const unsigned char*>(gdi.bits);
+    const int srcW = m_texW * scale;
     for (int y = 0; y < m_texH; ++y) {
         for (int x = 0; x < m_texW; ++x) {
-            const unsigned char* p = src + ((size_t)y * m_texW + x) * 4;
-            const int cov = std::max(p[0], std::max(p[1], p[2]));  // B,G,R
-            r8[(size_t)y * m_texW + x] = (unsigned char)cov;
+            int cov = 0;
+            for (int sy = 0; sy < scale; ++sy) {
+                for (int sx = 0; sx < scale; ++sx) {
+                    const unsigned char* p = src + ((size_t)(y * scale + sy) * srcW + (x * scale + sx)) * 4;
+                    cov += std::max(p[0], std::max(p[1], p[2]));
+                }
+            }
+            r8[(size_t)y * m_texW + x] = (unsigned char)(cov / (scale * scale));
         }
     }
 

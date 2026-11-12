@@ -71,6 +71,9 @@ void Fireflies::render(const FrameContext& ctx) {
     cb.p2 = m_cfg.woods;
     cb.direction = (float)m_cfg.style;
     cb.p3 = m_mask ? -1.0f : 0.0f;
+    const wchar_t* plate = m_cfg.style == 1 ? L"deep-woods" : (m_cfg.style == 2 ? L"meadow" : L"summer-dusk");
+    ctx.renderer->bindPlates(L"fireflies", plate);
+    cb.padA = ctx.renderer->plateMask();
     cb.lookX = ctx.lookX;
     cb.lookY = ctx.lookY;
     cb.quality = ctx.renderer->isWarp() ? 0.0f : 1.0f;

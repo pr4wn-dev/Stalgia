@@ -118,7 +118,12 @@ def hex_rgb(v):
 
 
 def tonemap(col):
-    return 1.0 - np.exp(-1.1 * np.maximum(col, 0.0))
+    """Hue-preserving shoulder. Peak is mapped, channel ratios stay put."""
+    c = np.maximum(col, 0.0)
+    m = np.maximum(np.maximum(c[0], c[1]), c[2])
+    t = 1.0 - np.exp(-1.1 * m)
+    scale = t / np.maximum(m, 1e-4)
+    return c * scale
 
 
 def grade(col, uv, width, height, look, quantize=False):
@@ -427,8 +432,8 @@ def aurora_ribbons(px, py, t, height_k, rays_k, ca, cb, surge, aspect, lift, edg
         gain = np.clip(0.35 / np.maximum(np.abs(dqx), 0.05), 0.6, 2.5)
         gain = 0.55 + 0.55 * gain
         fold = fbm2(qx * 0.7 + layer * 2.2, np.full_like(px, 0.3 + t * 0.01))
-        base = lerp(0.92, 0.64, height_k) - y_lift - lift
-        base = base + (fold - 0.48) * 0.42
+        base = lerp(0.56, 0.38, height_k) - y_lift - lift
+        base = np.minimum(base + (fold - 0.48) * 0.16, 0.58)
         above = base - py
         h_len = lerp(0.06, 0.24, height_k) * h_scale
         rx = qx + (px - 0.5 * aspect) * np.maximum(above, 0.0) * 0.35
@@ -456,9 +461,9 @@ def aurora_ribbons(px, py, t, height_k, rays_k, ca, cb, surge, aspect, lift, edg
             curtain[c] += np.array([1.0, 0.35, 0.55], dtype=np.float32)[c] * pink * 0.45 * mask
     # Faint third arc, no rays, above the main curtains.
     w = fbm2(px * 0.30 + 5.0, np.full_like(px, 1.2))
-    base3 = lerp(0.92, 0.64, height_k) - lift - 0.16 + (w - 0.5) * 0.20
+    base3 = np.minimum(lerp(0.56, 0.38, height_k) - lift - 0.08 + (w - 0.5) * 0.10, 0.52)
     a3 = base3 - py
-    i3 = smoothstep(-0.01, 0.004, a3) * np.exp(-np.maximum(a3, 0.0) / 0.16) * 0.06
+    i3 = smoothstep(-0.10, 0.06, a3) * np.exp(-np.maximum(a3, 0.0) / 0.16) * 0.06
     for c in range(3):
         curtain[c] += ca[c] * i3
     return curtain
@@ -570,11 +575,11 @@ def render_aurora(w, h, preset, time):
     col[0] = lerp(0.002, 0.008, sky_t)
     col[1] = lerp(0.003, 0.010, sky_t)
     col[2] = lerp(0.008, 0.020, sky_t)
-    if stars:
+    if stars or True:
         p = np.stack([(uv[0] - 0.5) * aspect, uv[1] - 0.5], axis=0)
         tint = np.array([0.85, 0.9, 1.0], dtype=np.float32)
-        add_stars(col, p, h, time, 0.0, 0.0, np.array([1.0, 0.0], dtype=np.float32), 0.35, 0.55, tint,
-                  ((80.0, 0.7, 0.012),), (0.0, 0.0))
+        add_stars(col, p, h, time, 0.0, 0.0, np.array([1.0, 0.0], dtype=np.float32), 0.45, 0.65, tint,
+                  ((70.0, 0.7, 0.045),), (0.0, 0.0), field=True)
     ca = hex_rgb(color_a)
     cb = hex_rgb(color_b)
     surge = 0.72 + 0.28 * float(vnoise(np.array(t * 0.045), np.array(2.2)))

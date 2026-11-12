@@ -1,6 +1,18 @@
 # Stalgia 1.12 art direction
 
-Direction and review only. Nothing here has been implemented. It covers Bobby's feedback on the released 1.11.0, which he runs on his own PC:
+Bobby's correction, which overrides the "painterly" wording below: "Bob Ross" meant quality only. He does not want a painted look. The effects are photoreal, cinematic, and high-detail. Fireflies, snow, stars, and aurora are overlays. Layered photo plates replace the procedural scenery when the files are present, and the effect draws on top. Until those files arrive, the procedural scene stays as the stand-in. Do not paint more landscape into the shaders.
+
+Plates are not in this repo. The loader checks `STALGIA_PLATES_DIR`, then `<exe>\plates`, then the app-data `plates` folder:
+
+```
+plates/<effect>/<preset>/far.png
+plates/<effect>/<preset>/mid.png
+plates/<effect>/<preset>/near.png
+```
+
+`far` is the distant opaque plate. `mid` and `near` are closer, use alpha, and parallax more. JPG and JPEG work too. A missing layer falls back to `plates/<effect>/sky/`. Folders: `fireflies/summer-dusk|deep-woods|meadow`, `snow/night-sky|pine-forest|window`, `stars/still-night|milky-way|nebula|warp`, `aurora/classic|magenta|polar|horizon`. No files means the procedural backdrop, unchanged. On a window preset the plate is the view through the glass. Fireflies draw between the far, mid, and near plates. Snow, stars, and aurora curtains draw in front of the stack.
+
+The rest of this file is the review of 1.11.0. It covers Bobby's feedback on the released build, which he runs on his own PC:
 
 1. Some fireflies are cut off: on some only the lower half of the glow shows, on others only half of the bug.
 2. The art could be better on Stars, Aurora, Snowfall, Fireflies, and Matrix.

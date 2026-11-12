@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Stalgia VERSION 1.11.0 LANGUAGES CXX RC)
+project(Stalgia VERSION 1.12.0 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,6 +12,7 @@ set(STALGIA_SOURCES
     src/core/Config.cpp
     src/effect/EffectRegistry.cpp
     src/gfx/GlyphAtlas.cpp
+    src/gfx/Plates.cpp
     src/gfx/Renderer.cpp
     src/effects/MatrixRain.cpp
     src/effects/Starfield.cpp

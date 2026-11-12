@@ -78,6 +78,12 @@ void Starfield::render(const FrameContext& ctx) {
     cb.lookY = ctx.lookY;
     cb.scroll = (float)wrapMod(m_time * (double)m_cfg.speed * 0.085, 64.0);
     cb.quality = 1.0f;
+    const wchar_t* plate = L"still-night";
+    if (m_cfg.warp > 0.4f) plate = L"warp";
+    else if (m_cfg.nebula > 0.4f) plate = L"nebula";
+    else if (m_cfg.density > 1.35f) plate = L"milky-way";
+    ctx.renderer->bindPlates(L"stars", plate);
+    cb.padA = ctx.renderer->plateMask();
     if (ctx.renderer->isWarp()) {
         cb.quality = 0.0f;
         if (cb.p0 > 0.2f) cb.p0 = 0.2f;

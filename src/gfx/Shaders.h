@@ -87,6 +87,33 @@ VSOut VSMain(uint id : SV_VertexID) {
 
 Texture2D<float> noiseTex : register(t1);
 SamplerState noiseSamp : register(s1);
+// Photoreal plates. padA is a bitmask: 1 far, 2 mid, 4 near. Zero keeps the procedural stand-in.
+Texture2D plateFar : register(t2);
+Texture2D plateMid : register(t3);
+Texture2D plateNear : register(t4);
+
+float4 plateLayer(int which, float2 uv) {
+    float depth = (which == 0) ? 0.012 : ((which == 1) ? 0.036 : 0.078);
+    float2 u = uv + float2(lookX, -lookY) * depth;
+    if (which == 0) return plateFar.Sample(noiseSamp, u);
+    if (which == 1) return plateMid.Sample(noiseSamp, u);
+    return plateNear.Sample(noiseSamp, u);
+}
+
+float3 plateStack(float2 uv) {
+    int m = (int)(padA + 0.5);
+    float3 c = float3(0.004, 0.006, 0.014);
+    if ((m & 1) != 0) c = plateLayer(0, uv).rgb;
+    if ((m & 2) != 0) {
+        float4 s = plateLayer(1, uv);
+        c = lerp(c, s.rgb, s.a);
+    }
+    if ((m & 4) != 0) {
+        float4 s = plateLayer(2, uv);
+        c = lerp(c, s.rgb, s.a);
+    }
+    return c;
+}
 
 float hash12(float2 p) {
     float3 p3 = frac(float3(p.xyx) * 0.1031);
@@ -138,7 +165,14 @@ float3 starColor(float u) {
     return lerp(c, blue, smoothstep(0.42, 1.0, u));
 }
 
-float3 tonemap(float3 c) { return 1.0 - exp(-1.1 * max(c, 0.0)); }
+// Hue-preserving shoulder. The old per-channel 1-exp curve pulled bright
+// greens and oranges toward white. Map the peak, keep the ratios.
+float3 tonemap(float3 c) {
+    c = max(c, 0.0);
+    float m = max(c.r, max(c.g, c.b));
+    float t = 1.0 - exp(-1.1 * m);
+    return c * (t / max(m, 1e-4));
+}
 float3 toLin(float3 c) { return pow(saturate(c), 2.2); }
 
 // field > 0.5 is the night-sky population: a shallower magnitude curve and a core
@@ -160,7 +194,10 @@ void starPoint(inout float3 col, float2 cell, float2 f, float scale, float depth
     float halo = 0.0;
     if (t > (sky ? 0.82 : 0.98)) halo = exp(-(dist * dist) / (sky ? 10.0 : 12.0)) * (sky ? 0.55 : 0.80);
     float3 bb = starColor(pow(hash12(cell + float2(9.0, 2.2)), 0.55));
-    float tw = 0.90 + 0.10 * sin(time * (0.45 + n * 1.4) + n * 42.0);
+    // Band-limited twinkle. Low stars scintillate more than stars overhead.
+    float twN = vnoise(float2(time * (0.55 + n * 1.1), n * 37.0));
+    float twAmp = lerp(0.08, 0.22, hash12(cell + float2(1.0, 5.0)));
+    float tw = 1.0 - twAmp + twAmp * 2.0 * twN;
     float amp = lerp(1.0, tw, twinkle);
     float gain = sky ? (0.34 + 2.15 * bright) : (0.35 + 1.15 * bright);
     float inten = (core * gain + halo) * amp * density;
@@ -169,7 +206,7 @@ void starPoint(inout float3 col, float2 cell, float2 f, float scale, float depth
 
 void starLayer(inout float3 col, float2 p, float scale, float depth, float keep, float twinkle,
                float density, float3 tint, float field) {
-    float2 q = p * scale;
+    float2 q = (p + float2(lookX, -lookY) * (0.02 + 0.05 * depth)) * scale;
     starPoint(col, floor(q), frac(q) - 0.5, scale, depth, keep, twinkle, density, tint, height / scale, field);
 }
 
@@ -194,8 +231,10 @@ float3 auroraRibbons(float px, float py, float t, float heightK, float raysK, fl
         float gain = clamp(0.35 / max(abs(dqx), 0.05), 0.6, 2.5);
         gain = 0.55 + 0.55 * gain;
         float fold = fbm2(float2(qx * 0.7 + layer * 2.2, 0.3 + t * 0.01));
-        float base = lerp(0.92, 0.64, heightK) - lift;
-        base += (fold - 0.48) * 0.42;
+        // Keep the hem in the sky. The old 0.64-0.92 range sat on the horizon.
+        float base = lerp(0.56, 0.38, heightK) - lift;
+        base += (fold - 0.48) * 0.16;
+        base = min(base, 0.58);
         float above = base - py;
         float hLen = lerp(0.06, 0.24, heightK) * hScale;
         float rx = qx + (px - 0.5 * aspect) * max(above, 0.0) * 0.35;
@@ -222,7 +261,7 @@ float3 auroraRibbons(float px, float py, float t, float heightK, float raysK, fl
     float w = fbm2(float2(px * 0.30 + 5.0, 1.2));
     float base3 = lerp(0.92, 0.64, heightK) - lift - 0.16 + (w - 0.5) * 0.20;
     float a3 = base3 - py;
-    float i3 = smoothstep(-0.01, 0.004, a3) * exp(-max(a3, 0.0) / 0.16) * 0.06;
+    float i3 = smoothstep(-0.10, 0.06, a3) * exp(-max(a3, 0.0) / 0.16) * 0.06;
     curtain += ca * i3;
     return curtain;
 }
@@ -278,13 +317,18 @@ float4 PSStarfield(VSOut i) : SV_Target {
     float cs = cos(rot);
     float sn = sin(rot);
     p = float2(cs * p.x - sn * p.y, sn * p.x + cs * p.y);
-    float skyT = smoothstep(0.0, 0.9, uv.y);
-    float3 col = lerp(float3(0.004, 0.006, 0.018), float3(0.009, 0.013, 0.030), skyT);
-    col += float3(0.005, 0.009, 0.016) * smoothstep(0.55, 1.0, uv.y);
-
     float diag = p.y * 0.95 + p.x * 0.78;
     float along = p.x * 0.95 - p.y * 0.78;
     float bandScale = max(1.0 - travel * 0.55, 0.42);
+    int plates = (int)(padA + 0.5);
+    float3 col;
+    if (plates != 0) {
+        // The photo is the sky. Stars, streaks, and meteors composite on top of it.
+        col = plateStack(i.uv);
+    } else {
+    float skyT = smoothstep(0.0, 0.9, uv.y);
+    col = lerp(float3(0.004, 0.006, 0.018), float3(0.009, 0.013, 0.030), skyT);
+    col += float3(0.005, 0.009, 0.016) * smoothstep(0.55, 1.0, uv.y);
     // Wide gaussian, evaluated on every pixel. The old cheap>0.003 test cut this
     // glow on two straight diagonals while it was still bright.
     float env = exp(-(diag * diag) / (2.0 * 0.30 * 0.30));
@@ -321,6 +365,7 @@ float4 PSStarfield(VSOut i) : SV_Target {
     // Shoulder on the glow only, so the warm core keeps rift detail and stars stay bright.
     glow = glow / (1.0 + glow * 0.90);
     col += glow;
+    }
     float skyKeep = 0.12 + 0.32 * exp(-(diag * diag) * 3.5);
 
     float peak = max(max(colorA.r, colorA.g), max(colorA.b, 0.001));
@@ -341,7 +386,7 @@ float4 PSStarfield(VSOut i) : SV_Target {
             float side = fr.x - (0.5 + (hash12(cell + float2(0.0, 8.0)) - 0.5) * 0.25);
             float alongS = fr.y - 0.72;
             float sidePx = abs(side * (6.2831853 / 90.0)) * r * height;
-            float len = lerp(0.15, 0.85, travel);
+            float len = lerp(0.04, 0.85, saturate(r * 1.6)) * lerp(0.35, 1.0, travel);
             float streak = exp(-(sidePx * sidePx) / (1.15 * 1.15));
             streak *= exp(-max(-alongS, 0.0) / len);
             streak *= smoothstep(0.14, 0.0, max(alongS, 0.0));
@@ -358,24 +403,28 @@ float4 PSStarfield(VSOut i) : SV_Target {
     }
 
     float nebula = saturate(p1);
-    if (nebula > 0.08 && quality > 0.5) {
+    if (plates == 0 && nebula > 0.08 && quality > 0.5) {
         float blob = exp(-(p.x + 0.05) * (p.x + 0.05) / 0.70 - (p.y + 0.02) * (p.y + 0.02) / 0.28);
         float blob2 = exp(-(p.x - 0.45) * (p.x - 0.45) / 0.35 - (p.y - 0.12) * (p.y - 0.12) / 0.16);
         float n1 = fbm2(p * 1.15 + float2(time * 0.008, -0.4));
         float n2 = fbm2(float2(p.x * 2.4 + 1.7, p.y * 1.8 + 0.6));
         float veil = smoothstep(0.36, 0.78, n1) * (0.40 + 0.60 * n2) * (blob + 0.65 * blob2) * nebula;
-        float3 nebCol = lerp(float3(0.16, 0.07, 0.24), tint, 0.62);
-        col += nebCol * veil * 1.85;
+        float dust = smoothstep(0.62, 0.82, fbm2(p * 2.2 + float2(4.0, time * 0.004)));
+        float3 ha = float3(0.82, 0.31, 0.42);
+        float3 oiii = float3(0.25, 0.65, 0.63);
+        float3 nebCol = lerp(ha, oiii, saturate(n2)) * 0.65 + tint * 0.25;
+        col += nebCol * veil * (1.0 - 0.55 * dust) * 1.7;
     }
 
     if (travel < 0.45) {
-        float period = 9.0;
-        float cycle = floor(time / period);
-        float u = frac(time / period);
-        if (u < 0.16) {
-            float2 start = float2(hash12(float2(cycle, 1.7)) * 1.3 - 0.75, hash12(float2(cycle, 4.2)) * 0.50 - 0.38);
-            float2 dir = normalize(float2(0.86, 0.18 + 0.22 * hash12(float2(cycle, 8.0))));
-            float2 head = start + dir * (u / 0.16) * 0.72;
+        // One meteor per 20s slot, and only some slots fire, so they stay rare.
+        float slot = floor(time / 20.0);
+        float u = frac(time / 20.0);
+        float pick = hash12(float2(slot, 3.3));
+        if (pick > 0.67 && u < 0.10) {
+            float2 start = float2(hash12(float2(slot, 1.7)) * 1.3 - 0.75, hash12(float2(slot, 4.2)) * 0.50 - 0.38);
+            float2 dir = normalize(float2(0.86, 0.18 + 0.22 * hash12(float2(slot, 8.0))));
+            float2 head = start + dir * (u / 0.10) * 0.72;
             float2 rel = p - head;
             float alongM = dot(rel, dir);
             float side = length(rel - dir * alongM);
@@ -388,13 +437,18 @@ float4 PSStarfield(VSOut i) : SV_Target {
             trail *= exp(-behind / (height * 0.22));
             trail *= smoothstep(height * 0.22, height * 0.01, behind);
             trail *= (alongPx < 0.8) ? 1.0 : 0.0;
-            float life = u / 0.16;
-            float fade = sin(pow(life, 0.55) * 3.14159265);
+            float life = u / 0.10;
+            float brightM = lerp(0.55, 1.7, hash12(float2(slot, 9.1)));
+            float fade = sin(pow(saturate(life), 0.55) * 3.14159265) * brightM;
             col += headG * fade * float3(1.15, 1.05, 0.90) + trail * fade * float3(1.05, 0.72, 0.42);
         }
     }
     return float4(toLin(tonemap(col)), 1.0);
 }
+
+float s1080();
+float groundPx(float x, float fracY, float amp, float len, float seed);
+float pineCard(float2 px, float gFrac, float amp, float len, float cell, float seed, float h0, float h1, float edgeMode, float b0, float b1);
 
 float4 PSAurora(VSOut i) : SV_Target {
     float2 uv = i.uv + float2(lookX, -lookY) * 0.12;
@@ -402,15 +456,26 @@ float4 PSAurora(VSOut i) : SV_Target {
     float2 pxy = float2(uv.x * aspect, uv.y);
     float t = time * speed;
     float skyT = smoothstep(0.0, 0.88, uv.y);
-    float3 col = lerp(float3(0.002, 0.003, 0.008), float3(0.008, 0.010, 0.020), skyT);
-    if (p2 > 0.5) {
+    int plates = (int)(padA + 0.5);
+    float3 col = (plates != 0) ? plateStack(i.uv) : lerp(float3(0.002, 0.003, 0.008), float3(0.008, 0.010, 0.020), skyT);
+    if (p2 > 0.02 || quality > 0.5) {
         float2 sp = float2((uv.x - 0.5) * aspect, uv.y - 0.5);
-        starLayer(col, sp, 80.0, 0.7, 0.012, 0.35, 0.55, float3(0.85, 0.90, 1.0), 0.0);
+        starLayer(col, sp, 70.0, 0.7, 0.045, 0.45, 0.65, float3(0.85, 0.90, 1.0), 1.0);
     }
     float surge = 0.72 + 0.28 * vnoise(float2(t * 0.045, 2.2));
     float lift = (p3 > 0.5) ? 0.10 : 0.0;
     col += auroraRibbons(pxy.x, pxy.y, t, p0, p1, colorA.rgb, colorB.rgb, surge, aspect, lift, 1.0);
-    if (p3 > 0.5 && quality > 0.5) {
+    if (plates == 0 && p3 < 0.5 && i.uv.y > 0.78) {
+        float2 ap = i.uv * float2(width, height);
+        float gnd = groundPx(ap.x, 0.88, 16.0, 460.0, 3.1);
+        float hill = smoothstep(gnd - 14.0 * s1080(), gnd + 3.0 * s1080(), ap.y);
+        float pines = pineCard(ap, 0.88, 16.0, 460.0, 110.0, 5.0, 0.035, 0.08, 0.0, 6.0, 16.0);
+        float3 groundCol = float3(0.006, 0.008, 0.012);
+        col = lerp(col, groundCol, hill * 0.92);
+        col = lerp(col, float3(0.003, 0.005, 0.008), saturate(pines) * (1.0 - hill));
+        col += colorA.rgb * saturate(pines) * (1.0 - hill) * 0.04;
+    }
+    if (plates == 0 && p3 > 0.5 && quality > 0.5) {
         float shore = 0.66 + (fbm2(float2(uv.x * 1.6, 11.0)) - 0.5) * 0.012;
         float far = fractalRidge(uv.x, shore + 0.02, 0.34, 1.0);
         float near = fractalRidge(uv.x, shore, 0.16, 6.5);
@@ -545,66 +610,95 @@ float pineCard(float2 px, float gFrac, float amp, float len, float cell, float s
     return cov;
 }
 
-float blinkEnv(float phase, float spd) {
-    float period = 8.0;
-    float cycles = 450.0; // 3600/8
-    float u = frac(time / 3600.0 * cycles + phase);
-    float on = 0.55;
-    float attack = 0.25 / period;
-    float release = 0.55 / period;
-    float env = smoothstep(0.0, attack, u) * (1.0 - smoothstep(on, on + release, u));
-    return env * saturate(0.35 + spd);
+// pattern in 0..1 picks the blink. Periods divide 3600s so the hour wrap is seamless.
+float blinkEnv(float phase, float pattern) {
+    float period = pattern < 0.55 ? 6.0 : (pattern < 0.80 ? 5.0 : 8.0);
+    float u = frac(time / 3600.0 * (3600.0 / period) + phase);
+    if (pattern < 0.55) {
+        // A long glow, still dark more often than it is lit.
+        return smoothstep(0.0, 0.03, u) * (1.0 - smoothstep(0.42, 0.55, u));
+    }
+    if (pattern < 0.80) {
+        float a = smoothstep(0.04, 0.07, u) * (1.0 - smoothstep(0.14, 0.18, u));
+        float b = smoothstep(0.24, 0.27, u) * (1.0 - smoothstep(0.34, 0.40, u));
+        return saturate(a + b);
+    }
+    return smoothstep(0.0, 0.025, u) * (1.0 - smoothstep(0.28, 0.40, u));
 }
 
 void addFlyLayer(inout float3 col, inout float maskA, float2 px, float y0, float y1,
                  float count, float3 tint, int kind) {
     float s = s1080();
+    px.x -= lookX * ((kind == 0) ? 44.0 : ((kind == 1) ? 133.0 : 267.0));
+    float spK = speed / 0.32;
+    float ampK = clamp(spK, 0.25, 1.5);
+    float kMul = max(1.0, round(spK / 1.5));
     float n = max(count * max(density, 0.05) * s, 1.0);
+    float baseAx = (kind == 1) ? 20.0 : ((kind == 2) ? 36.0 : 10.0);
+    float baseAy = (kind == 1) ? 14.0 : ((kind == 2) ? 16.0 : 7.0);
+    float ax = baseAx * s * ampK;
+    float ay = baseAy * s * ampK;
+    float bMax = ((kind == 0) ? 6.0 : ((kind == 1) ? 10.0 : 22.0)) * s;
+    float reachY = 3.0 * bMax + ay + 6.0 * s + 1.0;
+    float reachX = 3.0 * bMax + ax + 1.0;
+    float bandH = max(y1 - y0, 8.0);
+    if (px.y < y0 - reachY || px.y > y1 + reachY) return;
     float cols = (kind == 2) ? n : max(1.0, sqrt(n * width / max(height, 1.0)));
-    float rows = (kind == 2) ? 1.0 : max(1.0, ceil(n / cols));
-    float cw = width / cols;
-    float ch = max(y1 - y0, 8.0) / rows;
-    [unroll] for (int jy = 0; jy < 2; jy++) {
-        [unroll] for (int jx = 0; jx < 2; jx++) {
-            float2 ix = float2(floor(px.x / cw) - float(jx), floor((px.y - y0) / ch) - float(jy));
+    float rows = (kind == 2) ? 1.0 : max(1.0, ceil(n / max(cols, 1.0)));
+    rows = min(rows, max(1.0, floor(bandH * 1.15 / max(reachY, 1.0))));
+    cols = max(cols, ceil(n / max(rows * 0.85, 1.0)));
+    cols = min(cols, max(1.0, floor(width * 1.15 / max(reachX, 1.0))));
+    float cw = width / max(cols, 1.0);
+    float ch = bandH / max(rows, 1.0);
+    float occ = min(0.92, n / max(cols * rows, 1.0));
+    float2 cell = float2(floor(px.x / cw), floor((px.y - y0) / ch));
+    [unroll] for (int jy = -1; jy <= 1; jy++) {
+        [unroll] for (int jx = -1; jx <= 1; jx++) {
+            float2 ix = cell + float2((float)jx, (float)jy);
             float hs = hash12(ix + float2(0.0, 3.1));
-            if (hs > 1.0 - min(0.92, n / max(cols * rows, 1.0))) {
+            if (hs > 1.0 - occ) {
                 float2 j = hash22(ix + float2(2.0, 1.0));
                 float2 c = float2((ix.x + 0.15 + 0.7 * j.x) * cw, y0 + (ix.y + 0.15 + 0.7 * j.y) * ch);
                 float ang = 6.2831853 * time / 3600.0;
-                float k1 = 180.0 + floor(hs * 200.0);
-                float k2 = 260.0 + floor(hash12(ix + float2(0.0, 9.0)) * 180.0);
-                float ax = (kind == 1) ? 20.0 : ((kind == 2) ? 36.0 : 10.0);
-                float ay = (kind == 1) ? 14.0 : ((kind == 2) ? 16.0 : 7.0);
-                c.x += ax * s * sin(ang * k1 + hs * 6.0) * (speed / 0.32);
-                c.y += ay * s * sin(ang * k2 + hs * 4.0) * (speed / 0.32);
-                float env = blinkEnv(hs, speed);
-                c.y -= 6.0 * s * env;
+                float k1 = (180.0 + floor(hs * 200.0)) * kMul;
+                float k2 = (260.0 + floor(hash12(ix + float2(0.0, 9.0)) * 180.0)) * kMul;
+                float pattern = hash12(ix + float2(0.0, 4.0));
+                float env = blinkEnv(hs, pattern);
+                c.x += ax * sin(ang * k1 + hs * 6.0);
+                c.y += ay * sin(ang * k2 + hs * 4.0);
+                c.y -= (pattern > 0.80 ? 14.0 : 6.0) * s * env;
                 float2 d = px - c;
                 float dist = length(d);
                 float shade = 0.0;
-                float3 glow = tint;
+                float3 glow = lerp(tint, float3(1.0, 0.965, 0.784), 0.55 * env);
+                float level = 0.45;
                 if (kind == 2) {
-                    float coreR = lerp(1.1, 1.8, hs) * s;
-                    float bloom = lerp(5.0, 8.0, hs) * s;
-                    shade = (exp(-dist * dist / max(coreR * coreR, 0.2)) * 1.15
-                           + exp(-dist * dist / max(bloom * bloom, 0.4)) * 0.22) * env;
-                    glow = lerp(tint * 0.72, float3(1.0, 0.98, 0.85), 0.6 * env);
+                    float rad = lerp(11.0, 20.0, hs) * s;
+                    float edge = 3.5 * s;
+                    float disc = smoothstep(rad + edge, max(rad - edge, 0.0), dist);
+                    float rim = smoothstep(rad, rad - 2.2 * s, dist) * smoothstep(rad - 5.5 * s, rad - 2.2 * s, dist);
+                    shade = (disc * 0.20 + rim * 0.07) * env;
+                    glow = lerp(tint * 0.8, float3(1.0, 0.965, 0.784), 0.35);
+                    level = 1.0;
                 } else {
-                    float coreR = ((kind == 0) ? lerp(0.8, 1.2, hs) : lerp(1.3, 2.0, hs)) * s;
+                    float coreR = ((kind == 0) ? lerp(0.7, 1.05, hs) : lerp(1.2, 1.9, hs)) * s;
                     float bloom = ((kind == 0) ? lerp(4.0, 6.0, hs) : lerp(7.0, 10.0, hs)) * s;
-                    float peak = (kind == 0) ? 1.2 : 2.0;
-                    float gain = (kind == 0) ? 0.35 : 0.55;
-                    shade = (exp(-dist * dist / max(coreR * coreR, 0.2)) * peak
-                           + exp(-dist * dist / max(bloom * bloom, 0.4)) * gain) * env;
-                    glow = lerp(tint, float3(1.0, 0.98, 0.85), 0.6 * env);
+                    float r0 = ((kind == 0) ? 2.6 : 3.6) * s;
+                    float core = exp(-dist * dist / max(coreR * coreR, 0.2));
+                    float halo = pow(1.0 / (1.0 + (dist / r0) * (dist / r0)), 1.5);
+                    float window = exp(-dist * dist / max(bloom * bloom, 0.4));
+                    float peak = (kind == 0) ? 1.05 : 1.7;
+                    float gain = (kind == 0) ? 0.28 : 0.42;
+                    shade = (core * peak + halo * window * gain) * env;
+                    glow = lerp(tint, float3(1.0, 0.965, 0.784), 0.62 * env);
                 }
-                if (c.y > y0 - 8.0 && c.y < y1 + 8.0) {
-                    col += glow * shade;
-                    float level = 0.45;
-                    float mark = shade > 0.05 ? 1.0 : 0.0;
-                    maskA = max(maskA, mark * level);
-                }
+                float pad = max(8.0 * s, 2.0);
+                float edgeFade = smoothstep(y0 - pad - 12.0 * s, y0 - pad, c.y)
+                               * (1.0 - smoothstep(y1 + pad, y1 + pad + 12.0 * s, c.y));
+                shade *= edgeFade;
+                col += glow * shade;
+                float mark = shade > 0.05 ? 1.0 : 0.0;
+                maskA = max(maskA, mark * level);
             }
         }
     }
@@ -614,27 +708,33 @@ void snowDisc(inout float3 col, float2 px, float cellX0, float cellY0, float d0,
               float blur0, float a0, float a1, float fall, float sway, float freq, float stretch,
               float count, float seed, float3 tint, float extraBlur) {
     float s = s1080();
+    px.x -= lookX * (cellX0 < 80.0 ? 44.0 : (cellX0 < 200.0 ? 133.0 : 267.0));
     float cellX = cellX0 * s;
     float cellY = cellY0 * s;
     float rate = fall * (speed / 0.40) * s;
     float qy = cellY / 3600.0;
     float fallQ = round(rate / max(qy, 1e-5)) * qy;
     float windQ = round((p0 * fallQ * 0.7) / max(cellX / 3600.0, 1e-5)) * (cellX / 3600.0);
-    float shiftY = fallQ * time;
     float shiftX = windQ * time;
-    float2 origin = floor((px - float2(shiftX, shiftY)) / float2(cellX, cellY));
+    float originX = floor((px.x - shiftX) / cellX);
     float cells = max((1920.0 / cellX0) * (1080.0 / cellY0), 1.0);
     float keep = saturate(count * max(density, 0.05) * s / cells);
     [unroll] for (int ox = -1; ox <= 1; ox++) {
-        float2 cid = origin + float2(float(ox), 0.0);
+        float colX = originX + float(ox);
+        // The old jitter scaled the whole fall distance, so flakes walked out of
+        // the one row that looks them up and vanished after about a minute.
+        float jit = 1.0 + 0.2 * (hash12(float2(colX, seed + 3.0)) - 0.5);
+        float fallC = round(rate * jit / max(qy, 1e-5)) * qy;
+        float shiftC = fallC * time;
+        float rowY = floor((px.y - shiftC) / cellY);
+        float2 cid = float2(colX, rowY);
         float hs = hash12(cid + float2(2.0, seed));
         if (hs > 1.0 - max(keep, 0.02)) {
             float2 j = hash22(cid + float2(seed, 0.4));
-            float jitter = 1.0 + 0.2 * (hash12(float2(cid.x, seed + 3.0)) - 0.5);
             float cycles = max(1.0, round(freq * 3600.0));
             float swayX = sway * s * sin(6.2831853 * time / 3600.0 * cycles + hs * 6.2);
             float2 c = float2((cid.x + 0.5 + (j.x - 0.5) * 0.3) * cellX + shiftX + swayX,
-                              (cid.y + 0.5 + (j.y - 0.5) * 0.25) * cellY + shiftY * jitter);
+                              (cid.y + 0.5 + (j.y - 0.5) * 0.25) * cellY + shiftC);
             float diam = lerp(d0, d1, hs) * s;
             float rad = diam * 0.5;
             float blur = max((blur0 + extraBlur) * s, 0.45 * s);
@@ -643,7 +743,9 @@ void snowDisc(inout float3 col, float2 px, float cellX0, float cellY0, float d0,
             float dist = length(d);
             float alpha = lerp(a0, a1, hash12(cid + float2(0.0, 8.0)));
             float3 shade = tint * lerp(0.92, 1.0, hs);
-            float a = smoothstep(rad + blur, max(rad - blur, 0.0), dist) * alpha;
+            float edge = smoothstep(rad + blur, max(rad - blur, 0.0), dist);
+            float core = exp(-dist * dist / max(rad * rad * 0.28, 0.2));
+            float a = edge * alpha * lerp(0.62, 1.0, core);
             col = lerp(col, shade, saturate(a));
         }
     }
@@ -653,6 +755,26 @@ float4 PSFireflies(VSOut i) : SV_Target {
     float2 px = i.uv * float2(width, height);
     float s = s1080();
     int style = (direction < 0.5) ? 0 : ((direction < 1.5) ? 1 : 2);
+    int plates = (int)(padA + 0.5);
+    if (plates != 0 && p3 > -0.5) {
+        // Flies sit between the photo layers: far air, then the mid treeline, then the near trees.
+        float3 col = ((plates & 1) != 0) ? plateLayer(0, i.uv).rgb : float3(0.010, 0.016, 0.030);
+        float flyA = 0.0;
+        float3 glow = max(colorA.rgb, float3(0.02, 0.02, 0.02));
+        if (quality > 0.5) addFlyLayer(col, flyA, px, height * 0.30, height * 0.50, style == 1 ? 16.0 : 18.0, glow, 0);
+        if ((plates & 2) != 0) {
+            float4 mid = plateLayer(1, i.uv);
+            col = lerp(col, mid.rgb, mid.a);
+        }
+        addFlyLayer(col, flyA, px, height * 0.46, height * 0.72, 18.0, glow, 1);
+        if ((plates & 4) != 0) {
+            float4 nr = plateLayer(2, i.uv);
+            col = lerp(col, nr.rgb, nr.a);
+        }
+        if (style != 1) addFlyLayer(col, flyA, px, height * 0.55, height * 0.92, 2.0, glow, 2);
+        col *= (style == 0) ? 2.20 : 1.9;
+        return float4(toLin(tonemap(col)), 1.0);
+    }
     float3 col;
     float gFar, gMid, gNear, aFar, aMid, aNear, cellF, cellM, cellN;
     float3 cFar, cMid, cNear, horizon;
@@ -672,7 +794,7 @@ float4 PSFireflies(VSOut i) : SV_Target {
         aFar = 16.0; aMid = 18.0; aNear = 12.0;
         cellF = 90.0; cellM = 280.0; cellN = 260.0;
         cFar = float3(0.10, 0.09, 0.15); cMid = float3(0.018, 0.028, 0.020); cNear = float3(0.004, 0.005, 0.005);
-        horizon = float3(0.85, 0.40, 0.14);
+        horizon = float3(0.58, 0.32, 0.16);
         mistA = 0.12; exposure = 1.9; starN = 170.0;
     } else {
         col = lerp(float3(0.010, 0.016, 0.09), float3(0.55, 0.16, 0.07), smoothstep(0.45, 0.78, i.uv.y));
@@ -681,7 +803,7 @@ float4 PSFireflies(VSOut i) : SV_Target {
         cellF = 86.0; cellM = 150.0; cellN = 280.0;
         cFar = float3(0.022, 0.017, 0.040); cMid = float3(0.006, 0.005, 0.013); cNear = float3(0.005, 0.005, 0.010);
         horizon = float3(0.80, 0.30, 0.10);
-        mistA = 0.18; exposure = 2.05; starN = 75.0;
+        mistA = 0.18; exposure = 2.20; starN = 75.0;
     }
     float gy = groundPx(px.x, gFar, aFar, 480.0, 2.2);
     float band = exp(-pow((px.y - (gy - 0.02 * height)) / height, 2.0) / 0.001);
@@ -717,8 +839,8 @@ float4 PSFireflies(VSOut i) : SV_Target {
     col = lerp(col, float3(0.18, 0.20, 0.28), saturate(mist));
     float flyA = 0.0;
     float3 glow = max(colorA.rgb, float3(0.02, 0.02, 0.02));
-    if (quality > 0.5) addFlyLayer(col, flyA, px, height * (gFar - 0.18), height * (gFar + 0.02), style == 1 ? 10.0 : 18.0, glow, 0);
-    addFlyLayer(col, flyA, px, height * (gMid - 0.16), height * (gMid + 0.02), style == 1 ? 12.0 : 18.0, glow, 1);
+    if (quality > 0.5) addFlyLayer(col, flyA, px, height * (gFar - 0.18), height * (gFar + 0.02), style == 1 ? 16.0 : 18.0, glow, 0);
+    addFlyLayer(col, flyA, px, height * (gMid - 0.16), height * (gMid + 0.02), style == 1 ? 18.0 : 18.0, glow, 1);
     if (style != 1) addFlyLayer(col, flyA, px, height * 0.55, height * 0.92, 2.0, glow, 2);
     if (p1 > 0.02 && starN > 1.0 && i.uv.y < (style == 2 ? 0.42 : 0.50)) {
         float cell = 70.0 * s;
@@ -745,10 +867,25 @@ float4 PSSnow(VSOut i) : SV_Target {
     float frameM = 0.0, glassM = 0.0, frostM = 0.0, sillM = 0.0;
     float3 flake = max(colorA.rgb, float3(0.2, 0.2, 0.2));
     float3 ambient = float3(0.49, 0.56, 0.70);
+    int plates = (int)(padA + 0.5);
+    if (plates != 0 && backdrop < 1.5 && p3 > -0.5) {
+        col = plateStack(i.uv);
+        float3 tint = flake * float3(0.55, 0.62, 0.74);
+        if (quality > 0.5) {
+            snowDisc(col, px, 52.0, 44.0, 1.4, 2.2, 0.55, 0.40, 0.55, 32.0, 4.5, 0.70, 1.0, 900.0, 1.0, tint, 0.0);
+        }
+        snowDisc(col, px, 96.0, 84.0, 3.2, 5.2, 0.9, 0.62, 0.82, 64.0, 12.0, 0.50, 1.0, 340.0, 2.0, tint, 0.0);
+        snowDisc(col, px, 180.0, 160.0, 6.0, 9.0, 1.3, 0.75, 0.90, 112.0, 22.0, 0.35, 1.28, 80.0, 3.0, tint, 0.0);
+        snowDisc(col, px, 520.0, 480.0, 18.0, 30.0, 4.0, 0.10, 0.18, 200.0, 36.0, 0.25, 1.25, 5.0, 4.0, tint, 0.0);
+        return float4(toLin(tonemap(col)), 1.0);
+    }
     if (backdrop < 0.5) {
         col = lerp(float3(0.010, 0.025, 0.070), float3(0.04, 0.08, 0.14), i.uv.y) * 2.4;
         float2 moon = px - float2(0.72 * width, 0.22 * height);
         col = lerp(col, float3(0.34, 0.46, 0.68), exp(-dot(moon, moon) / (2.0 * pow(0.18 * height, 2.0))) * 0.55);
+        float moonR = 17.0 * s;
+        float disc = smoothstep(moonR + 1.6 * s, moonR - 1.2 * s, length(moon));
+        col = lerp(col, float3(0.82, 0.86, 0.93), disc * 0.72);
         float g = groundPx(px.x, 0.80, 22.0, 480.0, 4.0);
         float tips = pineCard(px, 0.80, 22.0, 480.0, 150.0, 4.2, 0.02, 0.045, 2.0, 0.0, 0.0);
         if (px.y < g - 1.0) col = lerp(col, float3(0.012, 0.020, 0.036) * 2.3, saturate(tips) * 0.72);
@@ -805,7 +942,9 @@ float4 PSSnow(VSOut i) : SV_Target {
         float rel = saturate((px.y - y0) / max(oh, 1.0));
         float3 outC = lerp(pow(float3(26.0, 39.0, 64.0) / 255.0, 2.2) * 2.8, pow(float3(60.0, 86.0, 120.0) / 255.0, 2.2) * 3.8, pow(rel, 0.75));
         float frac = (y0 + 0.76 * oh) / height;
-        if (glass) {
+        if (glass && plates != 0) {
+            outC = plateStack(i.uv);
+        } else if (glass) {
             float trees = pineCard(px, frac, 14.0, 300.0, 78.0, 21.0, 0.035, 0.08, 2.0, 0.0, 0.0);
             outC = lerp(outC, pow(float3(21.0, 32.0, 48.0) / 255.0, 2.2) * 2.4, saturate(trees) * 0.82);
             float g = groundPx(px.x, frac, 14.0, 300.0, 21.2);
@@ -842,8 +981,11 @@ float4 PSSnow(VSOut i) : SV_Target {
             frost = smoothstep(0.62, 0.02, lower) * lerp(0.25, 1.0, amt)
                   + smoothstep(0.26, 0.02, upper) * 0.30 * amt
                   + smoothstep(0.30, 0.0, (paneH - oy) / max(paneH, 1.0)) * lerp(0.04, 0.42, amt);
-            float ridge = 1.0 - abs(2.0 * vnoise(px / max(16.0 * s, 1.0)) - 1.0);
-            frost = saturate(frost * pow(saturate(ridge), 1.25) * lerp(0.15, 1.0, amt));
+            float fernU = (ox * 0.20 + oy) / max(18.0 * s, 1.0);
+            float fernV = (min(ox, paneW - ox) - min(oy, paneH - oy)) / max(7.0 * s, 1.0);
+            float fern = vnoise(float2(fernU, fernV + pxn));
+            float ridge = 1.0 - abs(2.0 * fern - 1.0);
+            frost = saturate(frost * pow(saturate(ridge), 1.15) * lerp(0.20, 1.0, amt));
             frostM = frost;
             float3 frostC = (px.x < x0 + paneW && px.y > y0 + 1.2 * paneH)
                 ? float3(0.72, 0.80, 0.88) : float3(0.68, 0.78, 0.90);
@@ -864,7 +1006,7 @@ float4 PSSnow(VSOut i) : SV_Target {
             float3 snowC = col;
             snowDisc(snowC, px, 52.0, 44.0, 1.4, 2.2, 0.95, 0.40, 0.55, 32.0, 4.5, 0.70, 1.0, 900.0, 1.0, tint, 0.4);
             snowDisc(snowC, px, 96.0, 84.0, 3.2, 5.2, 1.3, 0.62, 0.82, 64.0, 12.0, 0.50, 1.0, 340.0, 2.0, tint, 0.4);
-            snowDisc(snowC, px, 180.0, 160.0, 6.0, 9.0, 1.7, 0.75, 0.90, 112.0, 22.0, 0.35, 1.15, 80.0, 3.0, tint, 0.4);
+            snowDisc(snowC, px, 180.0, 160.0, 6.0, 9.0, 1.7, 0.75, 0.90, 112.0, 22.0, 0.35, 1.28, 80.0, 3.0, tint, 0.4);
             col = snowC;
         }
         if (p3 < -0.5) return float4(frameM, glassM, frostM, sillM);
@@ -875,7 +1017,7 @@ float4 PSSnow(VSOut i) : SV_Target {
         snowDisc(col, px, 52.0, 44.0, 1.4, 2.2, 0.55, 0.40, 0.55, 32.0, 4.5, 0.70, 1.0, 900.0, 1.0, tint, 0.0);
     }
     snowDisc(col, px, 96.0, 84.0, 3.2, 5.2, 0.9, 0.62, 0.82, 64.0, 12.0, 0.50, 1.0, 340.0, 2.0, tint, 0.0);
-    snowDisc(col, px, 180.0, 160.0, 6.0, 9.0, 1.3, 0.75, 0.90, 112.0, 22.0, 0.35, 1.15, 80.0, 3.0, tint, 0.0);
+    snowDisc(col, px, 180.0, 160.0, 6.0, 9.0, 1.3, 0.75, 0.90, 112.0, 22.0, 0.35, 1.28, 80.0, 3.0, tint, 0.0);
     snowDisc(col, px, 520.0, 480.0, 18.0, 30.0, 4.0, 0.10, 0.18, 200.0, 36.0, 0.25, 1.25, 5.0, 4.0, tint, 0.0);
     if (backdrop >= 0.5 && backdrop < 1.5) col *= 1.0;
     if (p3 < -0.5) return float4(farC, midC, nearC, 0.0);
@@ -1050,6 +1192,16 @@ float ign(float2 p) {
 
 float4 PSGrade(VSOut i) : SV_Target {
     float3 lin = sceneTex.Sample(sceneSamp, i.uv).rgb;
+    // One soft disc of bright pixels. Cheap stand-in for a Kawase pyramid: six taps, highlights only.
+    float3 bloom = 0.0;
+    float2 texel = float2(1.0 / max(width, 1.0), 1.0 / max(height, 1.0)) * 16.0;
+    [unroll] for (int k = 0; k < 6; k++) {
+        float ang = (float)k * 1.04719755;
+        float3 s = sceneTex.Sample(sceneSamp, i.uv + float2(cos(ang), sin(ang)) * texel).rgb;
+        float m = max(s.r, max(s.g, s.b));
+        bloom += s * saturate((m - 0.45) / 0.50);
+    }
+    lin += bloom * (0.055 / 6.0);
     float l = dot(lin, float3(0.2126, 0.7152, 0.0722));
     lin = lerp(l.xxx, lin, saturation);
     lin *= brightness;

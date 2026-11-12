@@ -2,6 +2,7 @@
 
 #include "core/Log.h"
 #include "core/Util.h"
+#include "gfx/Plates.h"
 #include "gfx/Shaders.h"
 
 #include <algorithm>
@@ -928,10 +929,34 @@ void Renderer::drawFullscreen(ID3D11PixelShader* ps, const void* data, UINT byte
         ID3D11SamplerState* ns = m_noiseSamp.get();
         m_context->PSSetSamplers(1, 1, &ns);
     }
+    ID3D11ShaderResourceView* plates[3] = {m_plateSrv[0].get(), m_plateSrv[1].get(), m_plateSrv[2].get()};
+    m_context->PSSetShaderResources(2, 3, plates);
     m_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
     m_context->Draw(3, 0);
     ID3D11ShaderResourceView* none = nullptr;
     m_context->PSSetShaderResources(1, 1, &none);
+    ID3D11ShaderResourceView* nonePlates[3] = {nullptr, nullptr, nullptr};
+    m_context->PSSetShaderResources(2, 3, nonePlates);
+}
+
+void Renderer::bindPlates(const wchar_t* effect, const wchar_t* preset) {
+    if (!m_device || !effect || !preset) {
+        m_plateKey.clear();
+        m_plateMask = 0.0f;
+        m_plateDevice = nullptr;
+        for (auto& srv : m_plateSrv) srv.reset();
+        return;
+    }
+    const std::wstring key = std::wstring(effect) + L"/" + preset;
+    if (key == m_plateKey && m_plateDevice == m_device.get()) return;
+    m_plateKey = key;
+    m_plateDevice = m_device.get();
+    m_plateMask = 0.0f;
+    for (auto& srv : m_plateSrv) srv.reset();
+    PlateLayers loaded;
+    if (!loadPlateLayers(m_device.get(), effect, preset, loaded)) return;
+    for (int i = 0; i < 3; ++i) m_plateSrv[i] = std::move(loaded.layer[i]);
+    m_plateMask = loaded.mask;
 }
 
 void Renderer::setViewport(int x, int y, int w, int h) {
@@ -1495,6 +1520,10 @@ void Renderer::release() {
     m_noiseSrv.reset();
     m_noiseSamp.reset();
     m_noiseTex.reset();
+    m_plateKey.clear();
+    m_plateMask = 0.0f;
+    m_plateDevice = nullptr;
+    for (auto& srv : m_plateSrv) srv.reset();
     m_lumaStage.reset();
     m_captureStage.reset();
     for (auto& q : m_gq) {

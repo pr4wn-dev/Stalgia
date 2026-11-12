@@ -75,6 +75,12 @@ void Aurora::render(const FrameContext& ctx) {
     cb.lookY = ctx.lookY;
     cb.scroll = (float)wrapMod(m_time * (double)m_cfg.speed * 0.085, 64.0);
     cb.quality = 1.0f;
+    const wchar_t* plate = L"classic";
+    if (m_cfg.horizon) plate = L"horizon";
+    else if (m_cfg.colorA == 0xFF5FA2u) plate = L"magenta";
+    else if (m_cfg.colorA == 0x86FFE0u) plate = L"polar";
+    ctx.renderer->bindPlates(L"aurora", plate);
+    cb.padA = ctx.renderer->plateMask();
     if (ctx.renderer->isWarp()) {
         cb.quality = 0.0f;
         cb.p3 = 0.0f;
