@@ -29,7 +29,8 @@ jobs:
       - name: Build
         run: cmake --build build-mingw -j
 
-      # CPU art-direction checks (C1–C16). They fail on the first-pass look.
+      # CPU art-direction checks (C1–C16 and the stair-step ground check).
+      # The stair check rejects the flat hash steps; the pass-1 look still fails C1 and C8.
       - name: Scene checks
         run: |
           pip install numpy pillow

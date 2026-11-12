@@ -146,6 +146,63 @@ def _tips(sky, min_sep, prom):
     return tips
 
 
+def _stair_fraction(card):
+    """Share of columns sitting on a flat, stepped soil shelf.
+
+    A rolling hill quantizes to runs whose neighbors differ by a pixel.
+    The old ground line was a hash step 7–10px wide with a jump of several
+    pixels, which reads as battlements. Tree tips sit well above the soil
+    median and are ignored.
+    """
+    solid = (card >= 0.5).astype(np.uint8)
+    h, w = solid.shape
+    if w < 8 or not solid.any():
+        return 0.0
+    rev = np.cumprod(np.flip(solid, 0), 0)
+    raw = np.argmax(np.flip(rev, 0) == 1, axis=0).astype(np.int32)
+    cuts = np.flatnonzero(np.diff(raw) != 0)
+    starts = np.r_[0, cuts + 1]
+    ends = np.r_[cuts, w - 1]
+    med = float(np.median(raw))
+    band = max(18, int(0.045 * h))
+    stair = 0
+    for i, (a, b) in enumerate(zip(starts, ends)):
+        length = int(b - a + 1)
+        if length < 5:
+            continue
+        if abs(int(raw[a]) - med) > band:
+            continue
+        # A step is two soil shelves at different heights. A tree rising out of
+        # the soil is not a shelf: its edge is far from the soil median.
+        jump = 0
+        if i > 0:
+            prev = int(raw[starts[i - 1]])
+            if abs(prev - med) <= band:
+                jump = max(jump, abs(int(raw[a]) - prev))
+        if i + 1 < len(starts):
+            nxt = int(raw[starts[i + 1]])
+            if abs(nxt - med) <= band:
+                jump = max(jump, abs(int(raw[a]) - nxt))
+        # Quantized curves step by a pixel. A battlement drops several.
+        if jump >= 8:
+            stair += length
+    return stair / float(w)
+
+
+def _legacy_battlement(h, w):
+    """Pass-2 soil line: per-column hash steps. Must fail the stair check."""
+    from render_sky import hash12, vnoise
+
+    xs = np.arange(w, dtype=np.float32) + 0.5
+    s = h / 1080.0
+    step = max(7.0, 10.0 * s)
+    jag = (hash12(np.floor(xs / step), np.full(w, 11.0)) - 0.5) * max(28.0, 18.0 * s)
+    n = vnoise(xs / max(420.0 * s, 1.0), np.full(w, 2.2))
+    g = np.clip(0.58 * h + 56.0 * s * (n - 0.5) + jag, 8.0, h - 6.0)
+    ys = np.arange(h, dtype=np.float32)[:, None] + 0.5
+    return (ys >= g[None, :]).astype(np.float32)
+
+
 def _edge_density(card):
     solid = card >= 0.5
     edge = solid.copy()
@@ -200,6 +257,9 @@ def _check_trees(name, h, w, failures):
         # shares its peaks across neighboring columns.
         if frac > 0.20:
             failures.append(f"{name} C2 {label} row {frac:.3f}")
+        stair = _stair_fraction(card)
+        if stair > 0.035:
+            failures.append(f"{name} C17 {label} stair {stair:.3f}")
         # Layer luma is the linear working color on pixels this card owns,
         # before tonemap. Tonemap crushes the spec's near-black hexes far
         # below the 0.0015 floor, so the floor is applied pre-tonemap.
@@ -497,3 +557,8 @@ def _assert_pass1_fails():
     if peak <= cap * 1.1:
         raise SystemExit("pass-1 snow unexpectedly stayed within the composite cap")
     print("pass-1 look fails C1 and C8, as required")
+    legacy = _legacy_battlement(180, 320)
+    stair = _stair_fraction(legacy)
+    if stair < 0.12:
+        raise SystemExit(f"pass-2 stepped ground unexpectedly passed the stair check ({stair:.3f})")
+    print(f"stepped ground fails the stair check ({stair:.3f})")

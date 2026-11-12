@@ -461,17 +461,59 @@ float4 PSAurora(VSOut i) : SV_Target {
 float s1080() { return height / 1080.0; }
 
 float groundPx(float x, float fracY, float amp, float len, float seed) {
-    float s = s1080();
-    float n = vnoise(float2(x / max(len * s, 1.0), seed));
-    float step = max(7.0, 10.0 * s);
-    float jag = (hash12(float2(floor(x / step), seed + 9.0)) - 0.5) * max(28.0, 18.0 * s);
-    return clamp(fracY * height + amp * s * (n - 0.5) + jag, 8.0, height - 6.0);
+    float s = max(s1080(), 0.001);
+    float p = x / s;
+    float L = max(len, 48.0);
+    float w = sin(p * (6.2831853 / L) + seed) * 0.62
+            + sin(p * (6.2831853 / (L * 0.37)) + seed * 2.1) * 0.28
+            + sin(p * (6.2831853 / 52.0) + seed * 3.7) * 0.22;
+    return clamp(fracY * height + amp * s * w, 8.0, height - 6.0);
 }
 
-float pineCard(float2 px, float gFrac, float amp, float len, float cell, float seed, float h0, float h1) {
+float grassFringe(float2 px, float fracY, float amp, float len, float seed, float shortH, float tallH) {
     float s = s1080();
-    float g = groundPx(px.x, gFrac, amp, len, seed);
-    float cov = px.y + 0.5 >= g ? 1.0 : 0.0;
+    float gHere = groundPx(px.x, fracY, amp, len, seed);
+    if (px.y < gHere - tallH * s - 4.0 || px.y > gHere + 2.0) return 0.0;
+    float cell = max(13.0 * s, 5.0);
+    float cov = 0.0;
+    float col = floor(px.x / cell);
+    [unroll] for (int k = -1; k <= 1; k++) {
+        float cid = col + float(k);
+        if (hash12(float2(cid, seed + 3.0)) > 0.28) {
+            [unroll] for (int b = 0; b < 2; b++) {
+                float hs = hash12(float2(cid, seed + 40.0 + float(b) * 2.3));
+                if (hs > 0.08) {
+                    float u = lerp(0.28, 0.72, hash12(float2(cid, seed + 51.0 + float(b))));
+                    float cx = (cid + u) * cell;
+                    float root = groundPx(cx, fracY, amp, len, seed);
+                    float bh = lerp(shortH, tallH, pow(saturate(hs), 1.7)) * s;
+                    float bw = lerp(1.05, 2.05, hash12(float2(cid, seed + 60.0 + float(b)))) * s;
+                    float lean = (hash12(float2(cid, seed + 70.0 + float(b))) - 0.5) * 0.85;
+                    float t = (root - px.y) / max(bh, 1.0);
+                    if (t > 0.0 && t < 1.0) {
+                        float half = bw * pow(saturate(1.0 - t), 1.45);
+                        float dx = abs(px.x - cx - lean * (root - px.y));
+                        cov = max(cov, saturate(half - dx + 0.5));
+                    }
+                }
+            }
+        }
+    }
+    return cov;
+}
+
+// edgeMode: 0 grass fringe, 1 soft snow drift, 2 hard fill.
+float pineCard(float2 px, float gFrac, float amp, float len, float cell, float seed, float h0, float h1, float edgeMode, float b0, float b1) {
+    float s = s1080();
+    float g = groundPx(px.x, gFrac, amp, len, seed + 0.2);
+    float cov;
+    if (edgeMode > 0.5 && edgeMode < 1.5) {
+        float feather = max(8.0 * s, 2.0);
+        cov = smoothstep(g - feather, g + feather * 0.30, px.y);
+    } else {
+        cov = px.y + 0.5 >= g ? 1.0 : 0.0;
+        if (edgeMode < 0.5) cov = max(cov, grassFringe(px, gFrac, amp, len, seed + 0.2, b0, b1));
+    }
     float cellPx = max(cell * s, 4.0);
     float col = floor(px.x / cellPx);
     [unroll] for (int k = -1; k <= 1; k++) {
@@ -543,9 +585,11 @@ void addFlyLayer(inout float3 col, inout float maskA, float2 px, float y0, float
                 float shade = 0.0;
                 float3 glow = tint;
                 if (kind == 2) {
-                    float rad = lerp(11.0, 20.0, hs) * s;
-                    shade = saturate((rad - dist) / max(4.0 * s, 0.5)) * 0.18 * env;
-                    glow = tint * 0.8;
+                    float coreR = lerp(1.1, 1.8, hs) * s;
+                    float bloom = lerp(5.0, 8.0, hs) * s;
+                    shade = (exp(-dist * dist / max(coreR * coreR, 0.2)) * 1.15
+                           + exp(-dist * dist / max(bloom * bloom, 0.4)) * 0.22) * env;
+                    glow = lerp(tint * 0.72, float3(1.0, 0.98, 0.85), 0.6 * env);
                 } else {
                     float coreR = ((kind == 0) ? lerp(0.8, 1.2, hs) : lerp(1.3, 2.0, hs)) * s;
                     float bloom = ((kind == 0) ? lerp(4.0, 6.0, hs) : lerp(7.0, 10.0, hs)) * s;
@@ -557,8 +601,8 @@ void addFlyLayer(inout float3 col, inout float maskA, float2 px, float y0, float
                 }
                 if (c.y > y0 - 8.0 && c.y < y1 + 8.0) {
                     col += glow * shade;
-                    float level = (kind == 2) ? 1.0 : 0.45;
-                    float mark = (kind == 2) ? (shade > 0.02 ? 1.0 : 0.0) : (shade > 0.05 ? 1.0 : 0.0);
+                    float level = 0.45;
+                    float mark = shade > 0.05 ? 1.0 : 0.0;
                     maskA = max(maskA, mark * level);
                 }
             }
@@ -617,37 +661,57 @@ float4 PSFireflies(VSOut i) : SV_Target {
     if (style == 1) {
         col = lerp(float3(0.008, 0.016, 0.028), float3(0.022, 0.045, 0.055), smoothstep(0.0, 0.75, i.uv.y));
         gFar = 0.52; gMid = 0.74; gNear = 0.84;
-        aFar = 56.0; aMid = 72.0; aNear = 44.0;
+        aFar = 30.0; aMid = 36.0; aNear = 20.0;
         cellF = 84.0; cellM = 140.0; cellN = 280.0;
         cFar = float3(0.012, 0.022, 0.026); cMid = float3(0.004, 0.008, 0.010); cNear = float3(0.004, 0.006, 0.008);
         horizon = float3(0.012, 0.028, 0.032);
         mistA = 0.28; exposure = 2.4; starN = 0.0;
     } else if (style == 2) {
         col = lerp(float3(0.004, 0.008, 0.035), float3(0.22, 0.10, 0.05), smoothstep(0.35, 0.78, i.uv.y));
-        gFar = 0.68; gMid = 0.82; gNear = 0.90;
-        aFar = 56.0; aMid = 40.0; aNear = 44.0;
-        cellF = 90.0; cellM = 220.0; cellN = 260.0;
+        gFar = 0.68; gMid = 0.76; gNear = 0.90;
+        aFar = 16.0; aMid = 18.0; aNear = 12.0;
+        cellF = 90.0; cellM = 280.0; cellN = 260.0;
         cFar = float3(0.10, 0.09, 0.15); cMid = float3(0.018, 0.028, 0.020); cNear = float3(0.004, 0.005, 0.005);
         horizon = float3(0.85, 0.40, 0.14);
         mistA = 0.12; exposure = 1.9; starN = 170.0;
     } else {
         col = lerp(float3(0.010, 0.016, 0.09), float3(0.55, 0.16, 0.07), smoothstep(0.45, 0.78, i.uv.y));
         gFar = 0.58; gMid = 0.84; gNear = 0.88;
-        aFar = 56.0; aMid = 72.0; aNear = 44.0;
+        aFar = 34.0; aMid = 40.0; aNear = 24.0;
         cellF = 86.0; cellM = 150.0; cellN = 280.0;
         cFar = float3(0.022, 0.017, 0.040); cMid = float3(0.006, 0.005, 0.013); cNear = float3(0.005, 0.005, 0.010);
         horizon = float3(0.80, 0.30, 0.10);
-        mistA = 0.18; exposure = 1.9; starN = 75.0;
+        mistA = 0.18; exposure = 2.05; starN = 75.0;
     }
-    float gy = groundPx(px.x, gFar, aFar, 420.0, 2.2);
+    float gy = groundPx(px.x, gFar, aFar, 480.0, 2.2);
     float band = exp(-pow((px.y - (gy - 0.02 * height)) / height, 2.0) / 0.001);
     col += horizon * band * (style == 1 ? 0.18 : 0.55);
-    float farC = pineCard(px, gFar, aFar, 420.0, cellF, 2.0, style == 2 ? 0.05 : 0.12, style == 2 ? 0.12 : (style == 1 ? 0.28 : 0.24));
-    float midC = pineCard(px, gMid, aMid, 320.0, cellM, 6.5, style == 2 ? 0.05 : 0.22, style == 2 ? 0.11 : (style == 1 ? 0.42 : 0.46));
-    float nearC = pineCard(px, gNear, aNear, 240.0, cellN, 11.0, style == 1 ? 0.28 : 0.16, style == 1 ? 0.48 : 0.34);
-    col = lerp(col, cFar * 1.6, saturate(farC));
-    col = lerp(col, cMid, saturate(midC));
-    col = lerp(col, cNear, saturate(nearC));
+    float b0 = style == 2 ? 8.0 : (style == 1 ? 6.0 : 7.0);
+    float b1 = style == 2 ? 28.0 : (style == 1 ? 22.0 : 26.0);
+    float farC = pineCard(px, gFar, aFar, 480.0, cellF, 2.0, style == 2 ? 0.05 : 0.12, style == 2 ? 0.12 : (style == 1 ? 0.28 : 0.24), 0.0, b0, b1);
+    b0 = style == 2 ? 10.0 : (style == 1 ? 8.0 : 10.0);
+    b1 = style == 2 ? 36.0 : (style == 1 ? 30.0 : 38.0);
+    float midC = pineCard(px, gMid, aMid, 340.0, cellM, 6.5, style == 2 ? 0.055 : 0.22, style == 2 ? 0.14 : (style == 1 ? 0.42 : 0.46), 0.0, b0, b1);
+    b0 = style == 2 ? 14.0 : (style == 1 ? 10.0 : 12.0);
+    b1 = style == 2 ? 70.0 : (style == 1 ? 40.0 : 52.0);
+    float nearC = pineCard(px, gNear, aNear, 260.0, cellN, 11.0, style == 1 ? 0.28 : (style == 2 ? 0.06 : 0.16), style == 1 ? 0.48 : (style == 2 ? 0.12 : 0.34), 0.0, b0, b1);
+    float3 field = col;
+    if (style == 2) {
+        float t = saturate((i.uv.y - 0.56) / 0.44);
+        float3 hi = pow(float3(138.0, 148.0, 116.0) / 255.0, 2.2);
+        float3 mid = pow(float3(70.0, 84.0, 60.0) / 255.0, 2.2);
+        float3 lo = pow(float3(22.0, 30.0, 20.0) / 255.0, 2.2);
+        field = lerp(lerp(hi, mid, saturate(t * 1.35)), lo, saturate((t - 0.32) / 0.68));
+    }
+    float gFarY = groundPx(px.x, gFar, aFar, 480.0, 2.2);
+    float gMidY = groundPx(px.x, gMid, aMid, 340.0, 6.7);
+    float gNearY = groundPx(px.x, gNear, aNear, 260.0, 11.2);
+    float3 farShade = (style == 2 && px.y >= gFarY) ? field : cFar * (style == 2 ? 1.0 : 1.6);
+    float3 midShade = (style == 2) ? field : cMid;
+    float3 nearShade = (style == 2 && px.y < gNearY) ? pow(float3(18.0, 24.0, 16.0) / 255.0, 2.2) : ((style == 2) ? field : cNear);
+    col = lerp(col, farShade, saturate(farC));
+    col = lerp(col, midShade, saturate(midC));
+    col = lerp(col, nearShade, saturate(nearC));
     float mist = smoothstep(gy - 40.0 * s, gy + 10.0 * s, px.y) * mistA * saturate(p0);
     if (quality > 0.5) mist *= 0.65 + 0.35 * vnoise(float2(px.x / (180.0 * s) + time * 0.02, 0.4));
     col = lerp(col, float3(0.18, 0.20, 0.28), saturate(mist));
@@ -685,19 +749,28 @@ float4 PSSnow(VSOut i) : SV_Target {
         col = lerp(float3(0.010, 0.025, 0.070), float3(0.04, 0.08, 0.14), i.uv.y) * 2.4;
         float2 moon = px - float2(0.72 * width, 0.22 * height);
         col = lerp(col, float3(0.34, 0.46, 0.68), exp(-dot(moon, moon) / (2.0 * pow(0.18 * height, 2.0))) * 0.55);
-        float g = groundPx(px.x, 0.80, 36.0, 500.0, 4.0);
-        if (px.y >= g) col = lerp(float3(0.03, 0.05, 0.10), float3(0.07, 0.10, 0.17), saturate((i.uv.y - 0.8) / 0.2)) * 2.2;
+        float g = groundPx(px.x, 0.80, 22.0, 480.0, 4.0);
+        float tips = pineCard(px, 0.80, 22.0, 480.0, 150.0, 4.2, 0.02, 0.045, 2.0, 0.0, 0.0);
+        if (px.y < g - 1.0) col = lerp(col, float3(0.012, 0.020, 0.036) * 2.3, saturate(tips) * 0.72);
+        float feather = max(12.0 * s, 2.0);
+        float hill = smoothstep(g - feather, g + feather * 0.2, px.y);
+        float3 field = lerp(float3(0.03, 0.05, 0.10), float3(0.07, 0.10, 0.17), saturate((i.uv.y - 0.76) / 0.24)) * 2.2;
+        col = lerp(col, field, hill);
         ambient = float3(0.46, 0.54, 0.68);
     } else if (backdrop < 1.5) {
         col = lerp(float3(0.006, 0.010, 0.022), float3(0.020, 0.038, 0.075), i.uv.y) * 3.8;
-        farC = pineCard(px, 0.60, 56.0, 400.0, 80.0, 2.0, 0.12, 0.26);
+        farC = pineCard(px, 0.60, 24.0, 420.0, 80.0, 2.0, 0.12, 0.26, 1.0, 0.0, 0.0);
         col = lerp(col, float3(0.024, 0.042, 0.078) * 3.2, saturate(farC));
-        midC = pineCard(px, 0.74, 72.0, 400.0, 130.0, 6.0, 0.20, 0.40);
+        midC = pineCard(px, 0.74, 32.0, 420.0, 130.0, 6.0, 0.20, 0.40, 1.0, 0.0, 0.0);
         col = lerp(col, float3(0.008, 0.014, 0.028) * 3.2, saturate(midC));
-        nearC = pineCard(px, 0.90, 44.0, 400.0, 240.0, 11.0, 0.28, 0.50);
+        nearC = pineCard(px, 0.90, 26.0, 280.0, 240.0, 11.0, 0.28, 0.50, 1.0, 0.0, 0.0);
         col = lerp(col, float3(0.003, 0.004, 0.007) * 3.2, saturate(nearC));
-        float g = groundPx(px.x, 0.90, 44.0, 240.0, 11.2);
-        if (px.y >= g) col = max(col, lerp(float3(0.04, 0.07, 0.12), float3(0.10, 0.15, 0.22), saturate((i.uv.y - 0.88) / 0.12)) * 3.0);
+        float g = groundPx(px.x, 0.90, 26.0, 280.0, 11.2);
+        float feather = max(11.0 * s, 2.0);
+        float floor = smoothstep(g - feather, g + feather * 0.2, px.y);
+        float crest = exp(-pow((px.y - g) / max(7.0 * s, 1.0), 2.0));
+        float3 field = lerp(float3(0.04, 0.07, 0.12), float3(0.12, 0.17, 0.26), saturate((i.uv.y - 0.86) / 0.14)) * 3.0;
+        col = lerp(col, field * (1.0 + 0.18 * crest), floor);
         ambient = float3(0.52, 0.60, 0.72);
     } else {
         float3 lamp = float3(1.0, 0.34, 0.08);
@@ -717,22 +790,43 @@ float4 PSSnow(VSOut i) : SV_Target {
         bool sill = px.x >= x0 - frameW && px.x <= x1 + frameW && px.y >= y1 && px.y <= y1 + 60.0 * s;
         frameM = frame ? 1.0 : 0.0;
         glassM = glass ? 1.0 : 0.0;
-        float3 wood = lerp(float3(0.026, 0.012, 0.006), float3(0.10, 0.04, 0.016), saturate(lampA / 0.25));
-        if (frame) col = wood;
-        if (sill) col = float3(0.14, 0.06, 0.03) + lamp * 0.05;
-        float3 outC = lerp(float3(0.004, 0.008, 0.018), float3(0.010, 0.020, 0.050), saturate((px.y - y0) / max(oh, 1.0)));
-        float tg = y0 + 0.62 * oh;
-        if (px.y > tg && px.y < y0 + 0.72 * oh) outC = float3(0.006, 0.010, 0.022);
-        if (px.y >= y0 + 0.72 * oh) outC = lerp(float3(0.022, 0.040, 0.080), float3(0.045, 0.070, 0.13), saturate((px.y - (y0 + 0.72 * oh)) / (0.28 * oh)));
-        // neighbor lights
+        float left = saturate((c.x - px.x) / (0.62 * ow) + 0.05);
+        float3 wood = lerp(float3(0.026, 0.012, 0.006), float3(0.14, 0.055, 0.018), saturate(0.22 + 0.70 * left + lampA * 1.6));
+        float shade = 1.0;
+        float lip = 2.2 * s;
+        if (frame && (abs(px.x - (x0 - frameW)) < lip || abs(px.x - (x0 + paneW - mul * 0.5)) < lip)) shade = 1.28;
+        if (frame && (abs(px.x - (x1 + frameW)) < lip || abs(px.x - (x0 + paneW + mul * 0.5)) < lip || abs(px.y - (y0 - frameW)) < lip)) shade = 0.62;
+        if (frame) col = wood * shade + lamp * lampA * (0.55 + 0.9 * left);
+        if (sill) {
+            float3 body = float3(0.026, 0.012, 0.006) * (0.85 + 0.35 * left) + lamp * lampA * (0.8 + left);
+            bool topFace = px.y <= y1 + 18.0 * s;
+            col = topFace ? (float3(0.14, 0.06, 0.028) * (0.9 + 0.4 * left) + lamp * (0.06 + 0.12 * left)) : body;
+        }
+        float rel = saturate((px.y - y0) / max(oh, 1.0));
+        float3 outC = lerp(pow(float3(26.0, 39.0, 64.0) / 255.0, 2.2) * 2.8, pow(float3(60.0, 86.0, 120.0) / 255.0, 2.2) * 3.8, pow(rel, 0.75));
+        float frac = (y0 + 0.76 * oh) / height;
+        if (glass) {
+            float trees = pineCard(px, frac, 14.0, 300.0, 78.0, 21.0, 0.035, 0.08, 2.0, 0.0, 0.0);
+            outC = lerp(outC, pow(float3(21.0, 32.0, 48.0) / 255.0, 2.2) * 2.4, saturate(trees) * 0.82);
+            float g = groundPx(px.x, frac, 14.0, 300.0, 21.2);
+            float feather = max(36.0 * s, 4.0);
+            float drift = smoothstep(g - feather, g + feather * 0.35, px.y);
+            float3 snowA = pow(float3(62.0, 86.0, 116.0) / 255.0, 2.2) * 3.2;
+            float3 snowB = pow(float3(90.0, 116.0, 148.0) / 255.0, 2.2) * 3.5;
+            outC = lerp(outC, lerp(snowA, snowB, saturate((px.y - g) / max(0.26 * oh, 1.0))), drift);
+        }
         [unroll] for (int li = 0; li < 3; li++) {
-            float2 lp = float2(x0, y0) + float2(li == 0 ? 0.32 : (li == 1 ? 0.68 : 0.50), li == 1 ? 0.48 : (li == 2 ? 0.60 : 0.55)) * float2(ow, oh);
-            float rad = (8.0 + (li == 2 ? 3.0 : 0.0)) * s;
-            float disc = saturate((rad + 3.0 * s - length(px - lp)) / (4.0 * s));
-            outC = lerp(outC, float3(1.0, 0.45, 0.14), disc * 0.22);
+            float fx = li == 0 ? 0.30 : (li == 1 ? 0.58 : 0.80);
+            float fy = li == 0 ? 0.70 : (li == 1 ? 0.66 : 0.72);
+            float rad = li == 1 ? 8.0 : (li == 2 ? 12.0 : 10.0);
+            float2 lp = float2(x0, y0) + float2(fx, fy) * float2(ow, oh);
+            float dist = length(px - lp);
+            float disc = smoothstep((rad + 5.0) * s, max((rad - 1.0) * s, 0.5), dist);
+            float core = exp(-dist * dist / max(pow(2.4 * s, 2.0), 0.8));
+            outC = lerp(outC, float3(1.0, 0.48, 0.16), disc * 0.42);
+            outC += float3(1.0, 0.72, 0.45) * core * 0.28;
         }
         float3 tint = flake * float3(0.42, 0.50, 0.64);
-        // snow is drawn into outC below, after the shared layers, only on glass
         float frost = 0.0;
         if (glass) {
             float lx = px.x - x0;
@@ -741,22 +835,30 @@ float4 PSSnow(VSOut i) : SV_Target {
             float pyn = clamp(floor(ly / paneH), 0.0, 2.0);
             float ox = lx - pxn * paneW;
             float oy = ly - pyn * paneH;
-            float corner = min(length(float2(ox, oy)), min(length(float2(paneW - ox, oy)), min(length(float2(ox, paneH - oy)), length(float2(paneW - ox, paneH - oy)))));
-            frost = smoothstep(0.28, 0.0, corner / max(paneW, 1.0)) + 0.6 * smoothstep(0.12, 0.0, (paneH - oy) / max(paneH, 1.0));
-            float ridge = 1.0 - abs(2.0 * vnoise(px / 22.0) - 1.0);
-            frost = pow(saturate(frost * ridge), 1.5);
+            float amt = smoothstep(0.12, 0.88, hash12(float2(pxn + pyn * 2.0 + 1.0, 8.0)));
+            float paneSize = max(min(paneW, paneH), 1.0);
+            float lower = min(length(float2(ox, paneH - oy)), length(float2(paneW - ox, paneH - oy))) / paneSize;
+            float upper = min(length(float2(ox, oy)), length(float2(paneW - ox, oy))) / paneSize;
+            frost = smoothstep(0.62, 0.02, lower) * lerp(0.25, 1.0, amt)
+                  + smoothstep(0.26, 0.02, upper) * 0.30 * amt
+                  + smoothstep(0.30, 0.0, (paneH - oy) / max(paneH, 1.0)) * lerp(0.04, 0.42, amt);
+            float ridge = 1.0 - abs(2.0 * vnoise(px / max(16.0 * s, 1.0)) - 1.0);
+            frost = saturate(frost * pow(saturate(ridge), 1.25) * lerp(0.15, 1.0, amt));
             frostM = frost;
-            outC = lerp(outC, float3(0.68, 0.78, 0.90), saturate(frost * 0.55));
+            float3 frostC = (px.x < x0 + paneW && px.y > y0 + 1.2 * paneH)
+                ? float3(0.72, 0.80, 0.88) : float3(0.68, 0.78, 0.90);
+            outC = lerp(outC, frostC, saturate(frost * 0.62));
         }
-        float top = y1 + (4.0 + 8.0 * vnoise(float2(px.x / (40.0 * s), 3.0))) * s;
-        float bot = y1 + 18.0 * s;
-        float mound = saturate((px.y - top) / max(bot - top, 1.0));
-        if (px.x >= x0 && px.x <= x1 && px.y >= y1 && px.y <= bot) {
-            sillM = mound;
-            col = lerp(col, float3(0.58, 0.66, 0.76), mound);
+        float n = vnoise(float2(px.x / max(80.0 * s, 1.0), 2.2));
+        float heightS = (20.0 + 12.0 * n) * s;
+        float st = (px.y - (y1 + s)) / max(heightS, 1.0);
+        float prof = sqrt(saturate(1.0 - pow(saturate(st), 2.0))) * smoothstep(1.05, 0.55, st);
+        if (px.x >= x0 + 8.0 * s && px.x <= x1 - 8.0 * s && px.y > y1 && st >= 0.0 && st <= 1.05) {
+            sillM = prof;
         }
         col *= 4.2;
         if (glass) col = outC;
+        if (sillM > 0.02) col = lerp(col, float3(0.78, 0.86, 0.94) * 1.15 + lamp * 0.05 * left, sillM);
         // outdoor snow, masked to the glass, composited after the room lift
         if (glass) {
             float3 snowC = col;
