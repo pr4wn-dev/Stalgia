@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake make clang \
+            gcc-mingw-w64-x86-64-win32 g++-mingw-w64-x86-64-win32 \
+            mingw-w64-x86-64-dev binutils-mingw-w64-x86-64
+
+      - name: Configure
+        run: cmake -S . -B build-mingw -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64-x86_64.cmake -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build-mingw -j
+
+      - name: Stage unsigned exe
+        id: stage
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          cp build-mingw/Stalgia.exe "dist/Stalgia-${ver}.exe"
+          echo "file=dist/Stalgia-${ver}.exe" >> "$GITHUB_OUTPUT"
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+
+      # Keep this name. A future SignPath step should submit Stalgia-unsigned
+      # and write the signed exe back over the file in dist/ before the release.
+      - name: Upload unsigned exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stalgia-unsigned
+          path: ${{ steps.stage.outputs.file }}
+          if-no-files-found: error
+
+      # SignPath (planned): submit artifact Stalgia-unsigned, wait, and replace
+      # dist/Stalgia-<version>.exe with the signed binary before creating the release.
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat > release-notes.md <<EOF
+          Stalgia is a lightweight animated desktop wallpaper for Windows 10 and 11. One portable 64-bit executable draws behind the desktop icons with Direct3D 11.
+
+          Highlights:
+          - Matrix, Code Ape, and Slow Myco
+          - Stars, Aurora, and Lava
+          - Desktop widget with a live preview, wallpaper picker, and system strip
+          - Gallery, tray icon, and control panel
+
+          The executable is unsigned for now, so Windows SmartScreen and Smart App Control may block it. Code signing via SignPath is planned.
+          EOF
+          gh release create "${GITHUB_REF_NAME}" "${{ steps.stage.outputs.file }}" \
+            --title "Stalgia ${{ steps.stage.outputs.version }}" \
+            --notes-file release-notes.md

@@ -1,0 +1,74 @@
+{
+  "version": 2,
+  "tune": {
+    "matrix": 2,
+    "starfield": 2,
+    "aurora": 2,
+    "lava": 2,
+    "ape": 3,
+    "myco": 3
+  },
+  "fps": 30,
+  "effect": "matrix",
+  "favorites": [],
+  "pauseOnFullscreen": true,
+  "pauseOnCovered": true,
+  "pauseOnBatterySaver": true,
+  "startWithWindows": false,
+  "showWidget": true,
+  "hideDesktopIcons": false,
+  "widgetMini": false,
+  "widgetX": -1,
+  "widgetY": -1,
+  "matrix": {
+    "color": "#00FF41",
+    "headColor": "#DEFFDE",
+    "speed": 1.0,
+    "density": 1.0,
+    "glyphSize": 18,
+    "trailLength": 22,
+    "fadePower": 1.35,
+    "mutate": 0.08
+  },
+  "starfield": {
+    "color": "#C8DCFF",
+    "speed": 1.0,
+    "density": 1.0
+  },
+  "aurora": {
+    "colorA": "#22FF88",
+    "colorB": "#6644FF",
+    "speed": 0.45
+  },
+  "lava": {
+    "lavaColor": "#FF6A14",
+    "liquidColor": "#100814",
+    "blobCount": 11,
+    "speed": 1.0,
+    "glow": 1.4,
+    "blobSize": 1.15
+  },
+  "ape": {
+    "color": "#F2F6FF",
+    "bgDim": 1.00,
+    "apeBrightness": 1.70,
+    "size": 0.85,
+    "posX": 0.50,
+    "speed": 1.0,
+    "glyphSize": 9,
+    "eyeGlow": false,
+    "breathing": true
+  },
+  "myco": {
+    "color": "#F2F6FF",
+    "bgDim": 1.00,
+    "brightness": 1.70,
+    "size": 0.85,
+    "posX": 0.50,
+    "speed": 1.0,
+    "glyphSize": 7,
+    "eyeGlow": false,
+    "breathing": true,
+    "colorize": true
+  }
+}
