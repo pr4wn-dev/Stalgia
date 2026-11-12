@@ -744,6 +744,11 @@ void Application::renderFrame(float dt, double time) {
     m_effect->update(dt, time);
     m_renderer.beginGpuTime();
     const char* eid = m_effect->id();
+    const bool usesPlates = eid && (std::strcmp(eid, "starfield") == 0 || std::strcmp(eid, "aurora") == 0 ||
+                                    std::strcmp(eid, "fireflies") == 0 || std::strcmp(eid, "snow") == 0);
+    // Matrix, lava, and the private effects never sample plates. Drop a binding
+    // left over from the previous wallpaper before they draw.
+    if (!usesPlates) m_renderer.bindPlates(nullptr, nullptr);
     const bool perMonitor = eid && (std::strcmp(eid, "starfield") == 0 || std::strcmp(eid, "aurora") == 0 ||
                                     std::strcmp(eid, "lava") == 0 || std::strcmp(eid, "fireflies") == 0 ||
                                     std::strcmp(eid, "snow") == 0);
@@ -788,6 +793,7 @@ void Application::renderFrame(float dt, double time) {
     } else {
         m_effect->render(ctx);
     }
+    m_framePlateMask = m_renderer.plateMask();
     m_renderer.compositeToBackbuffer();
     m_renderer.endGpuTime();
     const int presented = m_renderer.presentCount() - m_visArmPresent;
@@ -1228,10 +1234,30 @@ void Application::finishSelftest(bool pass, const char* extra) {
     requestQuit();
 }
 
+namespace {
+
+bool presetUsesPlates(const std::string& id, const char* name) {
+    if (!name) return false;
+    if (id == "starfield") return std::strcmp(name, "Still night") == 0 || std::strcmp(name, "Milky Way") == 0;
+    if (id == "aurora") return std::strcmp(name, "Classic") == 0;
+    if (id == "fireflies") return std::strcmp(name, "Summer dusk") == 0;
+    if (id == "snow") return std::strcmp(name, "Pine forest") == 0;
+    return false;
+}
+
+float gridMotion(const std::vector<float>& a, const std::vector<float>& b) {
+    if (a.empty() || a.size() != b.size()) return 0.0f;
+    float move = 0.0f;
+    for (size_t i = 0; i < a.size(); ++i) move = std::max(move, std::fabs(a[i] - b[i]));
+    return move;
+}
+
+}  // namespace
+
 void Application::tickSelftest() {
     if (!m_selftest || m_stPhase >= 99) return;
     const ULONGLONG now = GetTickCount64();
-    char line[384];
+    char line[512];
 
     if (m_stPhase == 0) {
         if (m_host.hwnd() && m_renderer.presentCount() >= 1) {
@@ -1443,6 +1469,13 @@ void Application::tickSelftest() {
                 advanceSelftestPreset(list);
                 return;
             }
+            // Seed the motion grid outside the present window. The readback stalls
+            // the GPU, and that stall is not a missed present.
+            Renderer::SceneSample seed;
+            constexpr int kGridW = 48;
+            constexpr int kGridH = 27;
+            m_stHaveGrid = m_renderer.sampleScene(seed, &m_stGrid, kGridW, kGridH) &&
+                           m_stGrid.size() == (size_t)kGridW * kGridH;
             m_stWindow = true;
             m_stPresentsMark = m_renderer.presentCount();
             m_stPhaseAt = now;
@@ -1450,27 +1483,39 @@ void Application::tickSelftest() {
         }
         if (now - m_stPhaseAt < 700) return;
         const int gained = m_renderer.presentCount() - m_stPresentsMark;
-        int lit = 0;
-        int sampled = 0;
-        const float luma = m_renderer.sampleSceneLuma(&lit, &sampled);
+        Renderer::SceneSample sample;
+        std::vector<float> grid;
+        constexpr int kGridW = 48;
+        constexpr int kGridH = 27;
+        const bool read = m_renderer.sampleScene(sample, &grid, kGridW, kGridH);
+        const float move = (read && m_stHaveGrid) ? gridMotion(m_stGrid, grid) : 0.0f;
+        const int lit = sample.lit;
+        const int sampled = sample.sampled;
+        const float luma = sample.maxLuma;
         const float gpuMs = m_renderer.lastGpuMs();
         char gpuBuf[32];
         if (gpuMs < 0.0f) std::snprintf(gpuBuf, sizeof(gpuBuf), "- (no timestamp)");
         else std::snprintf(gpuBuf, sizeof(gpuBuf), "%.2fms", gpuMs);
         // Max pixel, not a patch average: matrix is a few bright glyphs on black.
         // The fallback gradient stays under 0.004 and lights nothing above 0.02.
-        const bool content = luma >= 0.02f && lit >= 48;
+        const bool content = read && luma >= 0.02f && lit >= 48;
+        const bool plated = presetUsesPlates(id, pname);
+        const float plate = m_framePlateMask;
+        const bool plateBound = plate >= 14.5f;
+        const bool plateClear = plate < 0.5f;
         float edge = 0.0f;
         bool edgeOk = true;
-        if (id == "starfield") {
+        if (id == "starfield" && !plated) {
             edge = m_renderer.sampleBandEdge();
             edgeOk = edge <= 0.25f;
         }
         float cover = 0.0f;
         bool coverOk = true;
-        if (id == "fireflies" || id == "snow") {
-            const int pixels = std::max(1, sampled);
-            cover = (float)lit / (float)pixels;
+        if (sampled > 0) cover = (float)lit / (float)sampled;
+        if (plated) {
+            // The photograph covers the frame. A procedural speckle stays under 40%.
+            coverOk = cover >= 0.12f && cover <= 0.98f;
+        } else if (id == "fireflies" || id == "snow") {
             // Flakes and fireflies speckle a dark frame, so 40% is a blown-out field.
             // Window is the room and the view: the lamp-lit wall and the night
             // through the glass sit above the 0.02 floor on purpose. That measures
@@ -1480,19 +1525,53 @@ void Application::tickSelftest() {
             coverOk = window ? (cover >= 0.35f && cover <= 0.78f)
                              : (cover >= 0.002f && cover <= 0.40f);
         }
-        const bool pass = gained >= 2 && shaderReady && content && edgeOk && coverOk && m_stSwitchMs <= 250.0;
-        if (id == "starfield") {
+        bool effectOk = true;
+        const float band = (sample.bandN > 0 && sample.bandR > 1e-4) ? (float)(sample.bandG / sample.bandR) : 0.0f;
+        if (plated && id == "starfield") {
+            // Bright points on the night plate. The mountain silhouette fails the
+            // procedural Milky Way edge test, so that test stays on Nebula and Warp.
+            effectOk = sample.bright >= 12;
+        } else if (plated && id == "aurora") {
+            // Green curtain in the open sky, or the curtain moved during the window.
+            const float bandG = sample.bandN ? (float)(sample.bandG / sample.bandN) : 0.0f;
+            effectOk = (band >= 1.03f && bandG >= 0.02f) || move >= 0.008f;
+        } else if (plated) {
+            effectOk = move >= 0.004f;
+        }
+        const bool plateOk = plated ? plateBound : plateClear;
+        const bool pass = gained >= 2 && shaderReady && content && edgeOk && coverOk && effectOk && plateOk &&
+                          m_stSwitchMs <= 250.0;
+        if (plated && id == "starfield") {
             std::snprintf(line, sizeof(line),
-                          "Preset %s/%s: %s presents=%d switch=%.0fms gpu=%s luma=%.4f lit=%d edge=%.3f\n", id.c_str(),
-                          pname, pass ? "PASS" : "FAIL", gained, m_stSwitchMs, gpuBuf, luma, lit, edge);
+                          "Preset %s/%s: %s presents=%d switch=%.0fms gpu=%s luma=%.4f lit=%d cover=%.4f plate=%.0f bright=%d move=%.4f\n",
+                          id.c_str(), pname, pass ? "PASS" : "FAIL", gained, m_stSwitchMs, gpuBuf, luma, lit, cover,
+                          plate, sample.bright, move);
+        } else if (plated && id == "aurora") {
+            std::snprintf(line, sizeof(line),
+                          "Preset %s/%s: %s presents=%d switch=%.0fms gpu=%s luma=%.4f lit=%d cover=%.4f plate=%.0f band=%.3f move=%.4f\n",
+                          id.c_str(), pname, pass ? "PASS" : "FAIL", gained, m_stSwitchMs, gpuBuf, luma, lit, cover,
+                          plate, band, move);
+        } else if (id == "starfield") {
+            std::snprintf(line, sizeof(line),
+                          "Preset %s/%s: %s presents=%d switch=%.0fms gpu=%s luma=%.4f lit=%d edge=%.3f plate=%.0f\n",
+                          id.c_str(), pname, pass ? "PASS" : "FAIL", gained, m_stSwitchMs, gpuBuf, luma, lit, edge,
+                          plate);
         } else if (id == "fireflies" || id == "snow") {
-            std::snprintf(line, sizeof(line),
-                          "Preset %s/%s: %s presents=%d switch=%.0fms gpu=%s luma=%.4f lit=%d cover=%.4f\n", id.c_str(),
-                          pname, pass ? "PASS" : "FAIL", gained, m_stSwitchMs, gpuBuf, luma, lit, cover);
+            if (plated) {
+                std::snprintf(line, sizeof(line),
+                              "Preset %s/%s: %s presents=%d switch=%.0fms gpu=%s luma=%.4f lit=%d cover=%.4f plate=%.0f move=%.4f\n",
+                              id.c_str(), pname, pass ? "PASS" : "FAIL", gained, m_stSwitchMs, gpuBuf, luma, lit, cover,
+                              plate, move);
+            } else {
+                std::snprintf(line, sizeof(line),
+                              "Preset %s/%s: %s presents=%d switch=%.0fms gpu=%s luma=%.4f lit=%d cover=%.4f plate=%.0f sky=%.4f\n",
+                              id.c_str(), pname, pass ? "PASS" : "FAIL", gained, m_stSwitchMs, gpuBuf, luma, lit, cover,
+                              plate, sample.skyMean);
+            }
         } else {
             std::snprintf(line, sizeof(line),
-                          "Preset %s/%s: %s presents=%d switch=%.0fms gpu=%s luma=%.4f lit=%d\n", id.c_str(), pname,
-                          pass ? "PASS" : "FAIL", gained, m_stSwitchMs, gpuBuf, luma, lit);
+                          "Preset %s/%s: %s presents=%d switch=%.0fms gpu=%s luma=%.4f lit=%d plate=%.0f\n", id.c_str(),
+                          pname, pass ? "PASS" : "FAIL", gained, m_stSwitchMs, gpuBuf, luma, lit, plate);
         }
         m_stReport += line;
         if (!pass) m_stFail = true;
@@ -1525,6 +1604,8 @@ void Application::notePresetSwitch(const std::string& id, int preset) {
     QueryPerformanceCounter(&b);
     m_stSwitchMs = (freq.QuadPart > 0) ? (double)(b.QuadPart - a.QuadPart) * 1000.0 / (double)freq.QuadPart : 0;
     m_stWindow = false;
+    m_stHaveGrid = false;
+    m_stGrid.clear();
     m_stPhaseAt = GetTickCount64();
 }
 

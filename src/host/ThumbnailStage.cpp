@@ -193,6 +193,7 @@ bool ThumbnailStage::tick(Renderer* renderer, const EffectRegistry& registry, co
             grade.night = nightAmount(look->timeOfDay);
         }
         renderer->setGrade(grade);
+        Renderer::PlateBinding savedPlates = renderer->capturePlates();
         renderer->beginOffscreen(rtv, kWidth, kHeight);
         renderer->clear(0.01f, 0.012f, 0.02f, 1.0f);
         fx->update(1.0f / 12.0f, time);
@@ -209,6 +210,7 @@ bool ThumbnailStage::tick(Renderer* renderer, const EffectRegistry& registry, co
         ctx.time = time;
         fx->render(ctx);
         renderer->endOffscreen();
+        renderer->restorePlates(savedPlates);
 
         ID3D11Resource* stages[2] = {static_cast<ID3D11Resource*>(slot.stage),
                                      static_cast<ID3D11Resource*>(slot.stageB)};

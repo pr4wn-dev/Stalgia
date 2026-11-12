@@ -133,9 +133,19 @@ bool Renderer::initialize(HWND hwnd, bool useComposition) {
     m_device->CreateBuffer(&fscb, nullptr, m_fsCb.put());
 
     m_deviceLost = false;
+    startPlatePreload();
     LOG_INFO("D3D11 renderer ready %dx%d path=%s", m_width, m_height,
              m_composition ? "DirectComposition" : "HWND");
     return true;
+}
+
+void Renderer::PlateBinding::release() {
+    for (int i = 0; i < 4; ++i) {
+        if (layer[i]) {
+            layer[i]->Release();
+            layer[i] = nullptr;
+        }
+    }
 }
 
 void Renderer::logAdapters(IDXGIFactory1* factory) {
@@ -929,8 +939,14 @@ void Renderer::drawFullscreen(ID3D11PixelShader* ps, const void* data, UINT byte
         ID3D11SamplerState* ns = m_noiseSamp.get();
         m_context->PSSetSamplers(1, 1, &ns);
     }
-    ID3D11ShaderResourceView* plates[4] = {
-        m_plateSrv[0].get(), m_plateSrv[1].get(), m_plateSrv[2].get(), m_plateSrv[3].get()};
+    // A zero mask must not sample whatever was bound for the previous preset.
+    ID3D11ShaderResourceView* plates[4] = {nullptr, nullptr, nullptr, nullptr};
+    if (m_plateMask > 0.0f) {
+        plates[0] = m_plateSrv[0].get();
+        plates[1] = m_plateSrv[1].get();
+        plates[2] = m_plateSrv[2].get();
+        plates[3] = m_plateSrv[3].get();
+    }
     m_context->PSSetShaderResources(2, 4, plates);
     m_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
     m_context->Draw(3, 0);
@@ -941,7 +957,7 @@ void Renderer::drawFullscreen(ID3D11PixelShader* ps, const void* data, UINT byte
 }
 
 void Renderer::bindPlates(const wchar_t* effect, const wchar_t* preset) {
-    if (!m_device || !effect || !preset) {
+    if (!m_device || !effect || !effect[0] || !preset || !preset[0]) {
         m_plateKey.clear();
         m_plateMask = 0.0f;
         m_plateDevice = nullptr;
@@ -955,9 +971,44 @@ void Renderer::bindPlates(const wchar_t* effect, const wchar_t* preset) {
     m_plateMask = 0.0f;
     for (auto& srv : m_plateSrv) srv.reset();
     PlateLayers loaded;
-    if (!loadPlateLayers(m_device.get(), effect, preset, loaded)) return;
+    if (!acquirePlateLayers(m_device.get(), effect, preset, loaded)) {
+        // A miss that is still decoding must not stick, or the next frame
+        // would treat the empty bind as final and the preset would stay black.
+        if (loaded.pending) {
+            m_plateKey.clear();
+            m_plateDevice = nullptr;
+        }
+        return;
+    }
     for (int i = 0; i < 4; ++i) m_plateSrv[i] = std::move(loaded.layer[i]);
     m_plateMask = loaded.mask;
+}
+
+Renderer::PlateBinding Renderer::capturePlates() const {
+    PlateBinding saved;
+    saved.key = m_plateKey;
+    saved.device = m_plateDevice;
+    saved.mask = m_plateMask;
+    for (int i = 0; i < 4; ++i) {
+        saved.layer[i] = m_plateSrv[i].get();
+        if (saved.layer[i]) saved.layer[i]->AddRef();
+    }
+    return saved;
+}
+
+void Renderer::restorePlates(PlateBinding& saved) {
+    m_plateKey = std::move(saved.key);
+    m_plateDevice = saved.device;
+    saved.device = nullptr;
+    m_plateMask = saved.mask;
+    saved.mask = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        m_plateSrv[i].reset();
+        if (saved.layer[i]) {
+            m_plateSrv[i] = ComPtr<ID3D11ShaderResourceView>(saved.layer[i]);
+            saved.layer[i] = nullptr;
+        }
+    }
 }
 
 void Renderer::setViewport(int x, int y, int w, int h) {
@@ -1100,30 +1151,78 @@ bool Renderer::ensureSceneReadback() {
 }
 
 float Renderer::sampleSceneLuma(int* litPixels, int* sampleCount) {
-    if (litPixels) *litPixels = 0;
-    if (sampleCount) *sampleCount = 0;
-    if (!ensureSceneReadback()) return 0.0f;
+    SceneSample sample;
+    if (!sampleScene(sample)) {
+        if (litPixels) *litPixels = 0;
+        if (sampleCount) *sampleCount = 0;
+        return 0.0f;
+    }
+    if (litPixels) *litPixels = sample.lit;
+    if (sampleCount) *sampleCount = sample.sampled;
+    return sample.maxLuma;
+}
+
+bool Renderer::sampleScene(SceneSample& out, std::vector<float>* grid, int gridW, int gridH) {
+    out = {};
+    if (!ensureSceneReadback()) return false;
     D3D11_MAPPED_SUBRESOURCE map{};
-    if (FAILED(m_context->Map(m_lumaStage.get(), 0, D3D11_MAP_READ, 0, &map))) return 0.0f;
-    float best = 0.0f;
-    int lit = 0;
+    if (FAILED(m_context->Map(m_lumaStage.get(), 0, D3D11_MAP_READ, 0, &map))) return false;
     // A glyph or a star is a few bright pixels. An average of a small window misses them.
     constexpr float kLit = 0.02f;
+    const bool wantGrid = grid && gridW >= 2 && gridH >= 2;
+    std::vector<double> cellSum;
+    std::vector<int> cellN;
+    if (wantGrid) {
+        grid->assign((size_t)gridW * (size_t)gridH, 0.0f);
+        cellSum.assign(grid->size(), 0.0);
+        cellN.assign(grid->size(), 0);
+    }
+    double sum = 0.0;
+    double skySum = 0.0;
+    int skyN = 0;
+    const int skyCut = std::max(1, m_sceneH * 22 / 100);
+    const int band0 = m_sceneH * 16 / 100;
+    const int band1 = std::max(band0 + 1, m_sceneH * 42 / 100);
     for (int y = 0; y < m_sceneH; ++y) {
         const auto* row = reinterpret_cast<const uint16_t*>(static_cast<const char*>(map.pData) + (size_t)y * map.RowPitch);
+        const int gy = wantGrid ? std::min(gridH - 1, y * gridH / m_sceneH) : 0;
         for (int x = 0; x < m_sceneW; ++x) {
             const float r = halfToFloat(row[x * 4 + 0]);
             const float g = halfToFloat(row[x * 4 + 1]);
             const float b = halfToFloat(row[x * 4 + 2]);
             const float l = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-            if (l > best) best = l;
-            if (l >= kLit) ++lit;
+            if (l > out.maxLuma) out.maxLuma = l;
+            if (l >= kLit) ++out.lit;
+            if (l >= 0.50f) ++out.bright;
+            sum += l;
+            if (y < skyCut) {
+                skySum += l;
+                ++skyN;
+            }
+            if (y >= band0 && y < band1) {
+                out.bandR += r;
+                out.bandG += g;
+                out.bandB += b;
+                ++out.bandN;
+            }
+            if (wantGrid) {
+                const int gx = std::min(gridW - 1, x * gridW / m_sceneW);
+                const size_t cell = (size_t)gy * (size_t)gridW + (size_t)gx;
+                cellSum[cell] += l;
+                cellN[cell] += 1;
+            }
         }
     }
     m_context->Unmap(m_lumaStage.get(), 0);
-    if (litPixels) *litPixels = lit;
-    if (sampleCount) *sampleCount = m_sceneW * m_sceneH;
-    return best;
+    out.sampled = m_sceneW * m_sceneH;
+    out.meanLuma = out.sampled ? (float)(sum / out.sampled) : 0.0f;
+    out.skyMean = skyN ? (float)(skySum / skyN) : 0.0f;
+    if (wantGrid) {
+        for (size_t i = 0; i < grid->size(); ++i) {
+            (*grid)[i] = cellN[i] ? (float)(cellSum[i] / cellN[i]) : 0.0f;
+        }
+    }
+    return true;
 }
 
 float Renderer::sampleBandEdge() {
@@ -1361,6 +1460,7 @@ void Renderer::releaseScenes() {
 
 bool Renderer::beginFrame() {
     if (!m_context || !m_rtv) return false;
+    servicePlateUploads(m_device.get());
     m_offRtv = nullptr;
     m_drawScene = ensureScene(m_width, m_height, false);
     ID3D11RenderTargetView* rtv = m_drawScene ? m_sceneRtv.get() : m_rtv.get();
@@ -1521,6 +1621,7 @@ void Renderer::release() {
     m_noiseSrv.reset();
     m_noiseSamp.reset();
     m_noiseTex.reset();
+    releasePlateCache();
     m_plateKey.clear();
     m_plateMask = 0.0f;
     m_plateDevice = nullptr;

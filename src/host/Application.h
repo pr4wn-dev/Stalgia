@@ -134,7 +134,10 @@ private:
     bool m_autostartApplied = false;
     ULONGLONG m_saveDeadline = 0;
     bool m_stWindow = false;
+    bool m_stHaveGrid = false;
     double m_stSwitchMs = 0;
+    float m_framePlateMask = 0.0f;
+    std::vector<float> m_stGrid;
     int m_stPhase = 0;
     int m_stEffect = 0;
     int m_stPreset = 0;

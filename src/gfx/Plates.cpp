@@ -5,10 +5,15 @@
 #include "resource.h"
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
+#include <objbase.h>
 #include <wincodec.h>
 
 namespace {
@@ -176,20 +181,6 @@ bool upload(ID3D11Device* device, const std::vector<uint8_t>& bgra, UINT w, UINT
     return SUCCEEDED(device->CreateShaderResourceView(tex.get(), nullptr, out));
 }
 
-bool adopt(ID3D11Device* device, IWICImagingFactory* factory, IStream* stream, bool aurora, const wchar_t* effect,
-           const wchar_t* preset, const wchar_t* name, ID3D11ShaderResourceView** out) {
-    std::vector<uint8_t> bgra;
-    UINT w = 0, h = 0;
-    if (!decodeBgra(factory, stream, bgra, w, h)) {
-        LOG_WARN("WIC could not decode plate");
-        return false;
-    }
-    finishPlate(bgra, aurora);
-    if (!upload(device, bgra, w, h, out) || !*out) return false;
-    LOG_INFO("Plate %ls/%ls %ls %ux%u", effect, preset, name, w, h);
-    return true;
-}
-
 std::wstring findFile(const std::wstring& root, const wchar_t* effect, const wchar_t* preset, const wchar_t* layer) {
     if (!layer || !layer[0]) return {};
     const wchar_t* folders[2] = {preset, L"sky"};
@@ -219,6 +210,274 @@ std::wstring findExternal(const wchar_t* effect, const wchar_t* preset, int laye
     return {};
 }
 
+struct CpuLayer {
+    std::vector<uint8_t> bgra;
+    UINT w = 0;
+    UINT h = 0;
+};
+
+std::wstring cacheKey(const wchar_t* effect, const wchar_t* preset) {
+    if (!effect || !preset || !effect[0] || !preset[0]) return {};
+    const bool external = !findExternal(effect, preset, 0).empty();
+    const BuiltIn* built = builtinFor(effect, preset);
+    if (!external && !built) return {};
+    // Still night and Milky Way are the same embedded photographs.
+    if (!external && wcscmp(effect, L"stars") == 0 &&
+        (wcscmp(preset, L"still-night") == 0 || wcscmp(preset, L"milky-way") == 0)) {
+        return L"stars/builtin";
+    }
+    return std::wstring(effect) + L"/" + preset;
+}
+
+bool loadResourceLayer(IWICImagingFactory* factory, int id, IStream** out);
+
+bool decodePlateCpu(const wchar_t* effect, const wchar_t* preset, CpuLayer layer[4], float& mask) {
+    mask = 0.0f;
+    for (int i = 0; i < 4; ++i) layer[i] = {};
+    if (!effect || !preset) return false;
+    const bool aurora = wcscmp(effect, L"aurora") == 0;
+    const BuiltIn* built = builtinFor(effect, preset);
+    const bool externalSky = !findExternal(effect, preset, 0).empty();
+    if (!externalSky && !built) return false;
+
+    ComPtr<IWICImagingFactory> factory;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(factory.put()));
+    if (FAILED(hr) || !factory) {
+        LOG_WARN("WIC factory failed: 0x%08X", (unsigned)hr);
+        return false;
+    }
+    for (int i = 0; i < 4; ++i) {
+        ComPtr<IStream> stream;
+        bool opened = false;
+        if (externalSky) {
+            const std::wstring path = findExternal(effect, preset, i);
+            opened = !path.empty() && loadStreamFile(path, stream.put());
+        } else if (built) {
+            opened = loadResourceLayer(factory.get(), built->ids[i], stream.put());
+        }
+        if (!opened || !stream) continue;
+        UINT w = 0, h = 0;
+        if (!decodeBgra(factory.get(), stream.get(), layer[i].bgra, w, h)) {
+            layer[i] = {};
+            continue;
+        }
+        finishPlate(layer[i].bgra, aurora);
+        layer[i].w = w;
+        layer[i].h = h;
+        mask += (i == 0) ? 1.0f : (i == 1 ? 2.0f : (i == 2 ? 4.0f : 8.0f));
+        LOG_INFO("Plate decoded %ls/%ls %ls %ux%u", effect, preset, kLayerName[i], w, h);
+    }
+    return mask > 0.0f;
+}
+
+struct PlateSet {
+    std::wstring key;
+    std::wstring effect;
+    std::wstring preset;
+    CpuLayer cpu[4];
+    float mask = 0.0f;
+    bool decoded = false;
+    ComPtr<ID3D11ShaderResourceView> srv[4];
+    ID3D11Device* uploadedDevice = nullptr;
+};
+
+std::mutex g_mu;
+std::condition_variable g_cv;
+std::thread g_worker;
+bool g_started = false;
+bool g_stop = false;
+std::vector<PlateSet> g_sets;
+
+bool uploadSetLocked(PlateSet& set, ID3D11Device* device) {
+    if (!device) return false;
+    if (set.uploadedDevice == device) return true;
+    for (auto& srv : set.srv) srv.reset();
+    set.uploadedDevice = nullptr;
+    if (set.mask <= 0.0f) {
+        set.uploadedDevice = device;
+        return true;
+    }
+    bool any = false;
+    for (int i = 0; i < 4; ++i) {
+        if (set.cpu[i].bgra.empty()) continue;
+        any = true;
+        ID3D11ShaderResourceView* srv = nullptr;
+        if (!upload(device, set.cpu[i].bgra, set.cpu[i].w, set.cpu[i].h, &srv) || !srv) return false;
+        set.srv[i] = ComPtr<ID3D11ShaderResourceView>(srv);
+    }
+    if (!any) return false;
+    set.uploadedDevice = device;
+    for (auto& cpu : set.cpu) {
+        cpu.bgra.clear();
+        cpu.bgra.shrink_to_fit();
+    }
+    LOG_INFO("Plate uploaded %ls", set.key.c_str());
+    return true;
+}
+
+void workerMain() {
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const auto t0 = std::chrono::steady_clock::now();
+    for (;;) {
+        std::wstring effect, preset;
+        size_t index = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            if (g_stop) break;
+            index = g_sets.size();
+            for (size_t i = 0; i < g_sets.size(); ++i) {
+                if (!g_sets[i].decoded) {
+                    index = i;
+                    effect = g_sets[i].effect;
+                    preset = g_sets[i].preset;
+                    break;
+                }
+            }
+            if (index == g_sets.size()) break;
+        }
+        CpuLayer cpu[4];
+        float mask = 0.0f;
+        decodePlateCpu(effect.c_str(), preset.c_str(), cpu, mask);
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            if (g_stop || index >= g_sets.size()) break;
+            if (!g_sets[index].decoded) {
+                for (int i = 0; i < 4; ++i) g_sets[index].cpu[i] = std::move(cpu[i]);
+                g_sets[index].mask = mask;
+                g_sets[index].decoded = true;
+            }
+        }
+        g_cv.notify_all();
+    }
+    const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    LOG_INFO("Plate preload finished in %.0f ms", ms);
+    if (SUCCEEDED(com)) CoUninitialize();
+}
+
+void preloadImpl() {
+    std::lock_guard<std::mutex> lock(g_mu);
+    if (g_started) return;
+    const wchar_t* jobs[][2] = {
+        {L"stars", L"still-night"},
+        {L"stars", L"milky-way"},
+        {L"fireflies", L"summer-dusk"},
+        {L"snow", L"pine-forest"},
+        {L"aurora", L"classic"},
+    };
+    for (const auto& job : jobs) {
+        const std::wstring key = cacheKey(job[0], job[1]);
+        if (key.empty()) continue;
+        bool seen = false;
+        for (const auto& set : g_sets)
+            if (set.key == key) seen = true;
+        if (seen) continue;
+        PlateSet set;
+        set.key = key;
+        set.effect = job[0];
+        set.preset = job[1];
+        g_sets.push_back(std::move(set));
+    }
+    g_stop = false;
+    g_started = true;
+    g_worker = std::thread(workerMain);
+}
+
+void releaseImpl() {
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_stop = true;
+    }
+    g_cv.notify_all();
+    if (g_worker.joinable()) g_worker.join();
+    std::lock_guard<std::mutex> lock(g_mu);
+    g_sets.clear();
+    g_started = false;
+    g_stop = false;
+}
+
+void serviceImpl(ID3D11Device* device) {
+    if (!device) return;
+    std::lock_guard<std::mutex> lock(g_mu);
+    for (auto& set : g_sets) {
+        if (!set.decoded || set.uploadedDevice == device) continue;
+        uploadSetLocked(set, device);
+        return;
+    }
+}
+
+bool acquireImpl(ID3D11Device* device, const wchar_t* effect, const wchar_t* preset, PlateLayers& out) {
+    out.mask = 0.0f;
+    out.pending = false;
+    for (auto& layer : out.layer) layer.reset();
+    if (!device || !effect || !preset) return false;
+    const std::wstring key = cacheKey(effect, preset);
+    if (key.empty()) return false;
+
+    std::unique_lock<std::mutex> lock(g_mu);
+    if (!g_started) {
+        // Preload was not armed (no device yet). Decode this one set here.
+        lock.unlock();
+        CpuLayer cpu[4];
+        float mask = 0.0f;
+        if (!decodePlateCpu(effect, preset, cpu, mask)) return false;
+        for (int i = 0; i < 4; ++i) {
+            if (cpu[i].bgra.empty()) continue;
+            ID3D11ShaderResourceView* srv = nullptr;
+            if (!upload(device, cpu[i].bgra, cpu[i].w, cpu[i].h, &srv) || !srv) continue;
+            out.layer[i] = ComPtr<ID3D11ShaderResourceView>(srv);
+        }
+        out.mask = mask;
+        return out.mask > 0.0f;
+    }
+    size_t index = g_sets.size();
+    for (size_t i = 0; i < g_sets.size(); ++i) {
+        if (g_sets[i].key == key) {
+            index = i;
+            break;
+        }
+    }
+    if (index == g_sets.size()) {
+        PlateSet set;
+        set.key = key;
+        set.effect = effect;
+        set.preset = preset;
+        g_sets.push_back(std::move(set));
+        index = g_sets.size() - 1;
+        // The worker exits once every preloaded set is decoded. A late preset
+        // (an external override) decodes here, still off the switch clock if
+        // the caller asked during an earlier frame.
+        lock.unlock();
+        CpuLayer cpu[4];
+        float mask = 0.0f;
+        decodePlateCpu(effect, preset, cpu, mask);
+        lock.lock();
+        if (index < g_sets.size() && !g_sets[index].decoded) {
+            for (int i = 0; i < 4; ++i) g_sets[index].cpu[i] = std::move(cpu[i]);
+            g_sets[index].mask = mask;
+            g_sets[index].decoded = true;
+        }
+    }
+    if (index >= g_sets.size() || !g_sets[index].decoded) {
+        out.pending = true;
+        return false;
+    }
+    if (g_sets[index].mask <= 0.0f) return false;
+    // Uploading 4K layers is the frame loop's job, one set per frame, so a
+    // preset change never waits on the GPU upload either.
+    if (g_sets[index].uploadedDevice != device) {
+        out.pending = true;
+        return false;
+    }
+    PlateSet& set = g_sets[index];
+    for (int i = 0; i < 4; ++i) {
+        if (!set.srv[i]) continue;
+        set.srv[i]->AddRef();
+        out.layer[i] = ComPtr<ID3D11ShaderResourceView>(set.srv[i].get());
+    }
+    out.mask = set.mask;
+    return out.mask > 0.0f;
+}
+
 bool loadResourceLayer(IWICImagingFactory* factory, int id, IStream** out) {
     HMODULE mod = GetModuleHandleW(nullptr);
     HRSRC res = FindResourceW(mod, MAKEINTRESOURCEW(id), RT_RCDATA);
@@ -232,35 +491,12 @@ bool loadResourceLayer(IWICImagingFactory* factory, int id, IStream** out) {
 
 }  // namespace
 
-bool loadPlateLayers(ID3D11Device* device, const wchar_t* effect, const wchar_t* preset, PlateLayers& out) {
-    out = {};
-    if (!device || !effect || !effect[0] || !preset || !preset[0]) return false;
+void startPlatePreload() { preloadImpl(); }
 
-    const bool aurora = wcscmp(effect, L"aurora") == 0;
-    const BuiltIn* built = builtinFor(effect, preset);
-    const bool externalSky = !findExternal(effect, preset, 0).empty();
+void releasePlateCache() { releaseImpl(); }
 
-    ComPtr<IWICImagingFactory> factory;
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(factory.put()));
-    if (FAILED(hr) || !factory) {
-        LOG_WARN("WIC factory failed: 0x%08X", (unsigned)hr);
-        return false;
-    }
+void servicePlateUploads(ID3D11Device* device) { serviceImpl(device); }
 
-    for (int i = 0; i < 4; ++i) {
-        ComPtr<IStream> stream;
-        bool opened = false;
-        if (externalSky) {
-            const std::wstring path = findExternal(effect, preset, i);
-            opened = !path.empty() && loadStreamFile(path, stream.put());
-        } else if (built) {
-            opened = loadResourceLayer(factory.get(), built->ids[i], stream.put());
-        }
-        if (!opened || !stream) continue;
-        ID3D11ShaderResourceView* srv = nullptr;
-        if (!adopt(device, factory.get(), stream.get(), aurora, effect, preset, kLayerName[i], &srv) || !srv) continue;
-        out.layer[i] = ComPtr<ID3D11ShaderResourceView>(srv);
-        out.mask += (i == 0) ? 1.0f : (i == 1 ? 2.0f : (i == 2 ? 4.0f : 8.0f));
-    }
-    return out.mask > 0.0f;
+bool acquirePlateLayers(ID3D11Device* device, const wchar_t* effect, const wchar_t* preset, PlateLayers& out) {
+    return acquireImpl(device, effect, preset, out);
 }

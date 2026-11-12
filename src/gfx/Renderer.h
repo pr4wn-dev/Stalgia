@@ -74,6 +74,37 @@ public:
     // constants is the layer mask (0 when no plates are on disk).
     void bindPlates(const wchar_t* effect, const wchar_t* preset);
     float plateMask() const { return m_plateMask; }
+    // Thumbnails bind their own plates through the same slots. Capture and
+    // restore so a thumb cannot leave the wallpaper sampling another preset.
+    struct PlateBinding {
+        ID3D11ShaderResourceView* layer[4] = {};
+        std::wstring key;
+        ID3D11Device* device = nullptr;
+        float mask = 0.0f;
+        void release();
+        ~PlateBinding() { release(); }
+        PlateBinding() = default;
+        PlateBinding(const PlateBinding&) = delete;
+        PlateBinding& operator=(const PlateBinding&) = delete;
+        PlateBinding(PlateBinding&& other) noexcept { *this = std::move(other); }
+        PlateBinding& operator=(PlateBinding&& other) noexcept {
+            if (this != &other) {
+                release();
+                for (int i = 0; i < 4; ++i) {
+                    layer[i] = other.layer[i];
+                    other.layer[i] = nullptr;
+                }
+                key = std::move(other.key);
+                device = other.device;
+                other.device = nullptr;
+                mask = other.mask;
+                other.mask = 0.0f;
+            }
+            return *this;
+        }
+    };
+    PlateBinding capturePlates() const;
+    void restorePlates(PlateBinding& saved);
     void setViewport(int x, int y, int w, int h);
     bool isWarp() const { return m_warp; }
     void beginGpuTime();
@@ -84,6 +115,20 @@ public:
     // sampleCount is the number of scene-target pixels actually read, which is
     // the denominator for coverage. It is not the swapchain size.
     float sampleSceneLuma(int* litPixels = nullptr, int* sampleCount = nullptr);
+    // One readback. grid, when set, receives the mean linear luma of each cell.
+    struct SceneSample {
+        float maxLuma = 0.0f;
+        float meanLuma = 0.0f;
+        float skyMean = 0.0f;
+        int lit = 0;
+        int sampled = 0;
+        int bright = 0;
+        double bandR = 0.0;
+        double bandG = 0.0;
+        double bandB = 0.0;
+        int bandN = 0;
+    };
+    bool sampleScene(SceneSample& out, std::vector<float>* grid = nullptr, int gridW = 0, int gridH = 0);
     // Largest step, as a fraction of the band peak, where the Milky Way feather falls
     // toward the sky. A hard diagonal cutoff is well above a smooth gaussian.
     float sampleBandEdge();

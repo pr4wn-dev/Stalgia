@@ -866,13 +866,15 @@ float4 PSFireflies(VSOut i) : SV_Target {
     float mistA, exposure;
     float starN = 0.0;
     if (style == 1) {
-        col = lerp(float3(0.008, 0.016, 0.028), float3(0.022, 0.045, 0.055), smoothstep(0.0, 0.75, i.uv.y));
+        // Same linear stops as the CPU reference (0x152838 to 0x2E4A52). The old
+        // ramp stayed under the 0.02 lit floor after toLin, so the woods read as black.
+        col = lerp(float3(0.00412, 0.01699, 0.03561), float3(0.02310, 0.06575, 0.08241), smoothstep(0.0, 0.72, i.uv.y));
         gFar = 0.52; gMid = 0.74; gNear = 0.84;
         aFar = 30.0; aMid = 36.0; aNear = 20.0;
         cellF = 84.0; cellM = 140.0; cellN = 280.0;
         cFar = float3(0.012, 0.022, 0.026); cMid = float3(0.004, 0.008, 0.010); cNear = float3(0.004, 0.006, 0.008);
-        horizon = float3(0.012, 0.028, 0.032);
-        mistA = 0.28; exposure = 2.4; starN = 0.0;
+        horizon = float3(0.00902, 0.02655, 0.03561);
+        mistA = 0.28; exposure = 2.6; starN = 0.0;
     } else if (style == 2) {
         col = lerp(float3(0.004, 0.008, 0.035), float3(0.22, 0.10, 0.05), smoothstep(0.35, 0.78, i.uv.y));
         gFar = 0.68; gMid = 0.76; gNear = 0.90;
@@ -922,6 +924,13 @@ float4 PSFireflies(VSOut i) : SV_Target {
     float mist = smoothstep(gy - 40.0 * s, gy + 10.0 * s, px.y) * mistA * saturate(p0);
     if (quality > 0.5) mist *= 0.65 + 0.35 * vnoise(float2(px.x / (180.0 * s) + time * 0.02, 0.4));
     col = lerp(col, float3(0.18, 0.20, 0.28), saturate(mist));
+    if (style == 1) {
+        // Open sky above the canopy. Tree pixels stay dark; the gap clears the lit floor.
+        float open = 1.0 - saturate(max(farC, max(midC, nearC)));
+        float dy = i.uv.y - 0.46;
+        float hem = exp(-(dy * dy) / 0.010);
+        col += float3(0.018, 0.062, 0.074) * hem * open;
+    }
     float flyA = 0.0;
     float3 glow = max(colorA.rgb, float3(0.02, 0.02, 0.02));
     if (quality > 0.5) addFlyLayer(col, flyA, px, height * (gFar - 0.18), height * (gFar + 0.02), style == 1 ? 16.0 : 18.0, glow, 0);
