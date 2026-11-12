@@ -697,15 +697,68 @@ struct GalleryUi {
         Layout empty = build(g, 1100, 720);
         if (!empty.emptyGroup || !g.m_panelId.empty()) return fail("Favorites empty state");
 
+        // Night was added after Retro, so the last rail entry is not Lava's group.
+        const auto names = groupNames(g);
+        int retroGroup = -1;
+        for (int i = 0; i < (int)names.size(); ++i)
+            if (names[(size_t)i] == "Retro") retroGroup = i;
+        if (retroGroup < 0) return fail("Retro group missing");
         Hit retro{};
         retro.kind = HitGroup;
-        retro.index = (int)groupNames(g).size() - 1;
+        retro.index = retroGroup;
         activate(g, retro);
-        Layout lavaL = build(g, 1100, 720);
-        const Card* lava = nullptr;
-        for (const auto& c : lavaL.cards)
-            if (c.id == "lava") lava = &c;
-        if (!lava) return fail("Lava card missing");
+        g.m_gridScroll = 0;
+        auto placeLava = [&](float W, float H, float& hx, float& hy, Layout& out) -> bool {
+            for (int attempt = 0; attempt < 6; ++attempt) {
+                out = build(g, W, H);
+                const Card* lava = nullptr;
+                for (const auto& c : out.cards)
+                    if (c.id == "lava") lava = &c;
+                if (!lava) return false;
+                hx = lava->body.x + std::min(24.0f, lava->body.w * 0.5f);
+                hy = lava->thumb.y + lava->thumb.h * 0.5f;
+                if (out.grid.contains(hx, hy)) return true;
+                const float absTop = lava->body.y + g.m_gridScroll;
+                g.m_gridScroll = std::max(0.0f, absTop - out.grid.y - 8.0f);
+            }
+            return false;
+        };
+        float lavaX = 0, lavaY = 0;
+        Layout lavaL;
+        if (!placeLava(1100, 720, lavaX, lavaY, lavaL)) return fail("Lava card missing");
+        {
+            const Hit lh = hit(lavaL, lavaX, lavaY);
+            if (lh.kind != HitCard || lh.id != "lava") return fail("Lava card not hittable");
+        }
+        if (g.m_hwnd) {
+            float dipW = 1, dipH = 1;
+            g.clientDipSize(dipW, dipH);
+            g.m_gridScroll = 0;
+            Layout liveGroups = build(g, dipW, dipH);
+            if (retroGroup >= (int)liveGroups.groups.size()) return fail("Retro group missing");
+            const Rect row = liveGroups.groups[(size_t)retroGroup].row;
+            const float gx = row.x + row.w * 0.5f;
+            const float gy = row.y + row.h * 0.5f;
+            const Hit groupHit = hit(liveGroups, gx, gy);
+            if (!liveGroups.rail.contains(gx, gy) || groupHit.kind != HitGroup || groupHit.index != retroGroup)
+                return fail("Retro group is outside the window");
+            float liveX = 0, liveY = 0;
+            Layout live;
+            if (!placeLava(dipW, dipH, liveX, liveY, live)) return fail("Lava card missing");
+            const Hit liveHit = hit(live, liveX, liveY);
+            if (liveHit.kind != HitCard || liveHit.id != "lava") return fail("Lava card not hittable");
+            if (!live.grid.contains(liveX, liveY)) return fail("Lava card is outside the window");
+            const float dpi = g.m_dpi ? (float)g.m_dpi : 96.0f;
+            auto sendAt = [&](UINT msg, float dipX, float dipY, WPARAM wp) {
+                const int px = (int)std::lround(dipX * dpi / 96.0f);
+                const int py = (int)std::lround(dipY * dpi / 96.0f);
+                SendMessageW(g.m_hwnd, msg, wp, MAKELPARAM(px, py));
+            };
+            sendAt(WM_LBUTTONDOWN, liveX, liveY, MK_LBUTTON);
+            sendAt(WM_LBUTTONUP, liveX, liveY, 0);
+            if (g.m_panelId != "lava" || g.m_host->settings().effect != "lava")
+                return fail("Lava card click did not select it");
+        }
         Hit lavaHit;
         lavaHit.kind = HitCard;
         lavaHit.id = "lava";
@@ -753,7 +806,6 @@ struct GalleryUi {
         if (gridMax(scrolled) < 1.0f && scrolled.gridThumb.h > 1.0f) return fail("grid thumb without overflow");
         if (sideMax(scrolled) < 1.0f && scrolled.sideThumb.h > 1.0f) return fail("side thumb without overflow");
 
-        const auto names = groupNames(g);
         int matrixGroup = -1;
         for (int i = 0; i < (int)names.size(); ++i)
             if (names[(size_t)i] == "Matrix Rain") matrixGroup = i;
@@ -846,7 +898,8 @@ struct GalleryUi {
         }
 
         if (cardsHit < 6) return fail("only hit " + std::to_string(cardsHit) + " cards");
-        report = "GalleryUI: PASS groups=4 cards=6 sizes=4\n";
+        report = "GalleryUI: PASS groups=" + std::to_string(groupNames(g).size()) + " cards=" +
+                 std::to_string(cardsHit) + " sizes=4\n";
         return true;
     }
 };

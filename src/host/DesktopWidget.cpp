@@ -1985,10 +1985,23 @@ bool DesktopWidget::runSettingsSelfTest(std::string& report) {
         const int py = (int)std::lround(dipY * m_scale);
         SendMessageW(m_hwnd, msg, wp, MAKELPARAM(px, py));
     };
+    // buildLayout clamps the scroll it draws with, but a single add can store a
+    // value past the end. The next control is then still above the drawer, and
+    // adding the visual delta onto that stored overscroll never catches up.
     auto bringInto = [&](float contentY) {
-        const Layout probe = buildLayout();
-        if (contentY < probe.drawer.y + 4.0f || contentY > probe.drawer.y + probe.drawer.h - 8.0f)
-            m_drawerScroll = std::max(0.0f, m_drawerScroll + (contentY - (probe.drawer.y + 36.0f)));
+        for (int step = 0; step < 8; ++step) {
+            const Layout probe = buildLayout();
+            const float maxS = std::max(0.0f, probe.contentH - kDrawerMax);
+            const float visual = clampf(m_drawerScroll, 0.0f, maxS);
+            if (std::fabs(m_drawerScroll - visual) > 0.5f) m_drawerScroll = visual;
+            const float top = probe.drawer.y + 4.0f;
+            const float bot = probe.drawer.y + probe.drawer.h - 8.0f;
+            if (contentY >= top && contentY <= bot) return;
+            const float next = clampf(visual + (contentY - (probe.drawer.y + 36.0f)), 0.0f, maxS);
+            if (std::fabs(next - visual) < 0.5f) return;
+            contentY -= (next - visual);
+            m_drawerScroll = next;
+        }
     };
 
     auto auditDrawer = [&](const Layout& L) -> const char* {
@@ -2084,11 +2097,20 @@ bool DesktopWidget::runSettingsSelfTest(std::string& report) {
                     swBox = r.track;
                     break;
                 }
-            if (swIndex < 0 || !L.drawer.contains(swBox.x + 2.0f, swBox.y + 2.0f))
-                return fail(e.id + " color not hittable");
+            const float sx = swBox.x + swBox.w * 0.5f;
+            const float sy = swBox.y + swBox.h * 0.5f;
+            if (swIndex < 0 || !L.drawer.contains(sx, sy)) return fail(e.id + " color not hittable");
+            const Hit sh = hitTest(sx, sy);
+            if (sh.kind != HitKind::Swatch || sh.index != swIndex) return fail(e.id + " color not hittable");
+            RECT client{};
+            GetClientRect(m_hwnd, &client);
+            const int cpx = (int)std::lround(sx * m_scale);
+            const int cpy = (int)std::lround(sy * m_scale);
+            if (cpx < 0 || cpy < 0 || cpx >= client.right || cpy >= client.bottom)
+                return fail(e.id + " color outside the window");
             const uint32_t was = knobColor(m_host->settings(), e.id, swIndex);
-            sendAt(WM_LBUTTONDOWN, swBox.x + swBox.w * 0.5f, swBox.y + swBox.h * 0.5f, MK_LBUTTON);
-            sendAt(WM_LBUTTONUP, swBox.x + swBox.w * 0.5f, swBox.y + swBox.h * 0.5f, 0);
+            sendAt(WM_LBUTTONDOWN, sx, sy, MK_LBUTTON);
+            sendAt(WM_LBUTTONUP, sx, sy, 0);
             if (knobColor(m_host->settings(), e.id, swIndex) == was) return fail(e.id + " color did not change");
         }
 
