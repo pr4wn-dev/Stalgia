@@ -27,6 +27,8 @@ from render_sky import (
 ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "plates")
 LAYERS = ("layer-a-sky", "layer-b-mountains", "layer-c-mid", "layer-d-foreground")
 DEPTH = (0.22, 0.55, 1.05, 1.75)
+# Matches plateSampleUv in Shaders.h. Keeps the largest drift inside the photo.
+OVERSCAN = 1.06
 
 
 def snap_and_desat(arr, aurora):
@@ -61,29 +63,47 @@ def load_layers(effect, w, h, aurora):
     return out
 
 
-def shift_amount(which, time, w, h):
+def plate_shift(which, time, view):
     depth = DEPTH[which]
+    lx, ly = view
+    scale = 0.035 + 0.085 * depth
     ang = (time % 3600.0) / 3600.0 * math.tau
     drift = math.sin(ang * 2.0 + which * 0.7)
     drift_y = math.sin(ang + 1.4) * 0.35
     amp = 0.0012 + 0.0055 * depth
-    return int(round(drift * amp * w)), int(round(drift_y * amp * h))
+    return lx * scale + drift * amp, (-ly) * scale + drift_y * amp
 
 
-def shift_clamp(arr, dy, dx):
-    # Matches saturate(uv + shift): the photo clamps at the edge instead of wrapping.
+def sample_uv(which, time, w, h, view):
+    sx, sy = plate_shift(which, time, view)
+    xs = (np.arange(w, dtype=np.float32) + 0.5) / w
+    ys = (np.arange(h, dtype=np.float32) + 0.5) / h
+    u = (xs - 0.5) / OVERSCAN + 0.5 + sx
+    v = (ys - 0.5) / OVERSCAN + 0.5 + sy
+    return np.clip(u, 0.0, 1.0), np.clip(v, 0.0, 1.0), float(u.min()), float(u.max()), float(v.min()), float(v.max())
+
+
+def bilinear(arr, v, u):
     h, w = arr.shape[-2:]
-    src_y = np.clip(np.arange(h) - dy, 0, h - 1)
-    src_x = np.clip(np.arange(w) - dx, 0, w - 1)
-    return arr[..., src_y[:, None], src_x[None, :]]
+    xf = np.clip(u * w - 0.5, 0.0, w - 1.001)
+    yf = np.clip(v * h - 0.5, 0.0, h - 1.001)
+    x0 = np.floor(xf).astype(np.int32)
+    y0 = np.floor(yf).astype(np.int32)
+    x1 = np.minimum(x0 + 1, w - 1)
+    y1 = np.minimum(y0 + 1, h - 1)
+    tx = (xf - x0)[None, :]
+    ty = (yf - y0)[:, None]
+    a = arr[..., y0[:, None], x0[None, :]]
+    b = arr[..., y0[:, None], x1[None, :]]
+    c = arr[..., y1[:, None], x0[None, :]]
+    d = arr[..., y1[:, None], x1[None, :]]
+    return a * (1.0 - tx) * (1.0 - ty) + b * tx * (1.0 - ty) + c * (1.0 - tx) * ty + d * tx * ty
 
 
-def sample_layer(layer, which, time, w, h):
+def sample_layer(layer, which, time, w, h, view=(0.0, 0.0)):
     rgb, alpha = layer
-    dx, dy = shift_amount(which, time, w, h)
-    if dx == 0 and dy == 0:
-        return rgb, alpha
-    return shift_clamp(rgb, dy, dx), shift_clamp(alpha, dy, dx)
+    u, v, *_bounds = sample_uv(which, time, w, h, view)
+    return bilinear(rgb, v, u), bilinear(alpha, v, u)
 
 
 def over(col, rgb, alpha):
@@ -91,10 +111,10 @@ def over(col, rgb, alpha):
         col[c] = col[c] * (1.0 - alpha) + rgb[c] * alpha
 
 
-def cover(sky, layers, time, w, h, spill):
+def cover(sky, layers, time, w, h, spill, view=(0.0, 0.0)):
     col = sky.copy()
     for i in range(1, 4):
-        rgb, alpha = sample_layer(layers[i], i, time, w, h)
+        rgb, alpha = sample_layer(layers[i], i, time, w, h, view)
         if spill:
             luma = rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722
             ice = smoothstep(0.16, 0.55, luma)
@@ -118,12 +138,12 @@ def encode_linear(lin, w, h, look):
     return np.clip(enc * 255.0 + 0.5, 0, 255).astype(np.uint8).transpose(1, 2, 0)
 
 
-def sky_of(layers, time, w, h):
-    rgb, _alpha = sample_layer(layers[0], 0, time, w, h)
+def sky_of(layers, time, w, h, view=(0.0, 0.0)):
+    rgb, _alpha = sample_layer(layers[0], 0, time, w, h, view)
     return rgb
 
 
-def render_fireflies(w, h, time):
+def render_fireflies(w, h, time, view=(0.0, 0.0)):
     layers = load_layers("fireflies", w, h, False)
     x, y = px_grid(w, h)
     tint = lerp(hex_rgb(0xD2F26A), np.array([1.0, 0.58, 0.20], np.float32), 0.62)
@@ -133,39 +153,39 @@ def render_fireflies(w, h, time):
     add_fireflies(fx, x, y, w, h, time, 0.32, 1.0, tint, 0.54, 0.72, 20.0, "mid", mask, halo_scale=1.5)
     add_fireflies(fx, x, y, w, h, time, 0.32, 1.0, tint, 0.60, 0.78, 3.0, "near", mask, halo_scale=1.5)
     # add_fireflies mixes toward a linear white. Treat the sum as the pre-grade glow.
-    sky = sky_of(layers, time, w, h)
+    sky = sky_of(layers, time, w, h, view)
     col = sky.copy()
-    rgb, alpha = sample_layer(layers[1], 1, time, w, h)
+    rgb, alpha = sample_layer(layers[1], 1, time, w, h, view)
     over(col, rgb, alpha)
-    rgb, alpha = sample_layer(layers[2], 2, time, w, h)
+    rgb, alpha = sample_layer(layers[2], 2, time, w, h, view)
     over(col, rgb, alpha)
     glow = np.power(np.clip(tonemap(fx), 0.0, 1.0), 2.2)
     col += glow
-    rgb, alpha = sample_layer(layers[3], 3, time, w, h)
+    rgb, alpha = sample_layer(layers[3], 3, time, w, h, view)
     over(col, rgb, alpha)
     return encode_linear(col, w, h, (1.0, 1.05, 0.28, False))
 
 
-def render_snow(w, h, time):
+def render_snow(w, h, time, view=(0.0, 0.0)):
     layers = load_layers("snow", w, h, False)
     x, y = px_grid(w, h)
     flake = hex_rgb(0xF4F7FF)
     near = lerp(flake, np.array([0.93, 0.95, 1.0], np.float32), 0.72)
     far = near * np.array([0.70, 0.78, 0.92], np.float32)
-    col = sky_of(layers, time, w, h).copy()
-    rgb, alpha = sample_layer(layers[1], 1, time, w, h)
+    col = sky_of(layers, time, w, h, view).copy()
+    rgb, alpha = sample_layer(layers[1], 1, time, w, h, view)
     over(col, rgb, alpha)
     _snow_one(col, x, y, w, h, time, 0.48, 0.38, 1.15, far, 0, None)
-    rgb, alpha = sample_layer(layers[2], 2, time, w, h)
+    rgb, alpha = sample_layer(layers[2], 2, time, w, h, view)
     over(col, rgb, alpha)
-    rgb, alpha = sample_layer(layers[3], 3, time, w, h)
+    rgb, alpha = sample_layer(layers[3], 3, time, w, h, view)
     over(col, rgb, alpha)
     for index in (1, 2, 3):
         _snow_one(col, x, y, w, h, time, 0.48, 0.38, 1.15, near, index, None)
     return encode_linear(col, w, h, (1.0, 0.9, 0.30, False))
 
 
-def render_stars(w, h, time, preset):
+def render_stars(w, h, time, preset, view=(0.0, 0.0)):
     speed, density, twinkle, _nebula, warp, direction, color, look = preset
     layers = load_layers("starfield", w, h, False)
     ys, xs = np.indices((h, w), dtype=np.float32)
@@ -191,13 +211,13 @@ def render_stars(w, h, time, preset):
               ((34.0, 1.0, 0.22),), (0.0, 0.0), field=True)
     if travel < 0.45:
         meteor(fx, pr, h, time)
-    sky = sky_of(layers, time, w, h) + np.power(np.clip(tonemap(fx), 0.0, 1.0), 2.2)
+    sky = sky_of(layers, time, w, h, view) + np.power(np.clip(tonemap(fx), 0.0, 1.0), 2.2)
     # Daytime grade. The Milky Way preset's night slider only comes on after dusk.
     day = (look[0], look[1], look[2], False)
-    return encode_linear(cover(sky, layers, time, w, h, False), w, h, day)
+    return encode_linear(cover(sky, layers, time, w, h, False, view), w, h, day)
 
 
-def render_aurora(w, h, time):
+def render_aurora(w, h, time, view=(0.0, 0.0)):
     layers = load_layers("aurora", w, h, True)
     ys, xs = np.indices((h, w), dtype=np.float32)
     uv = np.stack([(xs + 0.5) / w, (ys + 0.5) / h], axis=0)
@@ -214,10 +234,15 @@ def render_aurora(w, h, time):
     ca = hex_rgb(0x3CFF78)
     cb = hex_rgb(0xFF4B7A)
     surge = 0.72 + 0.28 * float(vnoise(np.array(t * 0.045), np.array(2.2)))
-    sky_room = 1.0 - smoothstep(0.16, 0.44, uv[1])
-    fx += aurora_ribbons(px, py, t, 0.72, 0.82, ca, cb, surge, aspect, 0.0, False) * (0.40 * sky_room)
-    sky = sky_of(layers, time, w, h) + np.power(np.clip(tonemap(fx), 0.0, 1.0), 2.2)
-    return encode_linear(cover(sky, layers, time, w, h, True), w, h, (1.0, 1.0, 0.18, False))
+    rib = aurora_ribbons(px, py, t, 0.72, 0.82, ca, cb, surge, aspect, 0.0, False, 0.03)
+    mag = (1.0 - smoothstep(0.02, 0.18, uv[1]))[None, :, :]
+    green = np.array([0.80, 1.40, 0.85], np.float32)[:, None, None]
+    pink = np.array([1.15, 0.72, 1.22], np.float32)[:, None, None]
+    rib = rib * (green * (1.0 - mag) + pink * mag)
+    sky_room = 1.0 - smoothstep(0.48, 0.70, uv[1])
+    fx += rib * (1.15 * sky_room)
+    sky = sky_of(layers, time, w, h, view) + np.power(np.clip(tonemap(fx), 0.0, 1.0), 2.2)
+    return encode_linear(cover(sky, layers, time, w, h, False, view), w, h, (1.0, 1.0, 0.18, False))
 
 
 def main():
@@ -246,6 +271,35 @@ def main():
         path = os.path.join(args.out, name + ".png")
         Image.fromarray(img, "RGB").save(path, optimize=True)
         print(f"  wrote {path}", flush=True)
+
+    # Foreground drift peaks. Cursor look is pushed the same way, which is the
+    # largest sample offset the shader can produce.
+    phase = 3 * 0.7
+    def t_for(target):
+        ang = (target - phase) / 2.0
+        return (ang / math.tau * 3600.0) % 3600.0
+
+    extremes = []
+    for label, target in (("drift-left", -math.pi / 2.0), ("drift-right", math.pi / 2.0)):
+        t = t_for(target)
+        sx, sy = plate_shift(3, t, (0.0, 0.0))
+        view = (0.045 if sx >= 0.0 else -0.045, -0.035 if sy >= 0.0 else 0.035)
+        for which in range(4):
+            _u, _v, umin, umax, vmin, vmax = sample_uv(which, t, w, h, view)
+            print(f"  {label} layer {which} u {umin:.4f}..{umax:.4f} v {vmin:.4f}..{vmax:.4f}", flush=True)
+            if umin < 0.004 or umax > 0.996 or vmin < 0.004 or vmax > 0.996:
+                raise SystemExit(f"overscan missed the edge at {label} layer {which}")
+        extremes.append((label, t, view))
+    for label, t, view in extremes:
+        for name, fn in (
+            ("fireflies-summer-dusk", lambda t=t, view=view: render_fireflies(w, h, t, view)),
+            ("aurora-classic", lambda t=t, view=view: render_aurora(w, h, t, view)),
+        ):
+            print(f"rendering {name}-{label} t={t:.2f} view={view}", flush=True)
+            img = fn()
+            path = os.path.join(args.out, f"{name}-{label}.png")
+            Image.fromarray(img, "RGB").save(path, optimize=True)
+            print(f"  wrote {path}", flush=True)
 
 
 if __name__ == "__main__":

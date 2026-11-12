@@ -104,8 +104,15 @@ float2 plateShift(int which) {
     return look + float2(drift, driftY) * amp;
 }
 
+// Zoom in so the drift never samples the texture border. The foreground moves
+// at most 0.0108 UV, and cursor parallax adds at most 0.0083, so 6% leaves a margin.
+float2 plateSampleUv(int which, float2 uv) {
+    float2 u = (uv - 0.5) / 1.06 + 0.5 + plateShift(which);
+    return saturate(u);
+}
+
 float4 plateLayer(int which, float2 uv) {
-    float2 u = saturate(uv + plateShift(which));
+    float2 u = plateSampleUv(which, uv);
     if (which <= 0) return plateSky.Sample(noiseSamp, u);
     if (which == 1) return plateMtn.Sample(noiseSamp, u);
     if (which == 2) return plateMid.Sample(noiseSamp, u);
@@ -253,7 +260,7 @@ void starLayer(inout float3 col, float2 p, float scale, float depth, float keep,
 }
 
 float3 auroraRibbons(float px, float py, float t, float heightK, float raysK, float3 ca, float3 cb,
-                     float surge, float aspect, float lift, float edgeOn) {
+                     float surge, float aspect, float lift, float edgeOn, float hemBias) {
     float3 curtain = 0.0;
     raysK = saturate(raysK);
     [unroll] for (int layer = 0; layer < 2; layer++) {
@@ -276,14 +283,17 @@ float3 auroraRibbons(float px, float py, float t, float heightK, float raysK, fl
         // Keep the hem in the sky. The old 0.64-0.92 range sat on the horizon.
         float base = lerp(0.56, 0.38, heightK) - lift;
         base += (fold - 0.48) * 0.16;
-        base = min(base, 0.58);
+        base = min(base, 0.58) + hemBias;
         float above = base - py;
         float hLen = lerp(0.06, 0.24, heightK) * hScale;
         float rx = qx + (px - 0.5 * aspect) * max(above, 0.0) * 0.35;
         float ray = 0.35 + 0.65 * pow(saturate(vnoise1(rx * 38.0)), 2.5) + 0.25 * vnoise1(rx * 110.0);
         ray = lerp(1.0, ray, raysK * rayContrast);
         float hs = hLen * (0.45 + 0.9 * ray);
-        float body = smoothstep(-0.0025, 0.0015, above) * exp(-max(above, 0.0) / max(hs, 0.001));
+        // Plates drop the hem behind the ridges and feather it. Zero bias keeps the procedural edge.
+        float body = (hemBias > 0.001)
+            ? smoothstep(-0.12, 0.04, above) * exp(-max(above, 0.0) / max(hs, 0.001))
+            : smoothstep(-0.0025, 0.0015, above) * exp(-max(above, 0.0) / max(hs, 0.001));
         float hem = exp(-max(above, 0.0) / 0.0045) * edgeBoost;
         float knots = 0.6 + 0.8 * vnoise1(qx * 6.0);
         float intensity = body * (1.0 + 2.4 * hem) * knots * gain;
@@ -518,11 +528,15 @@ float4 PSAurora(VSOut i) : SV_Target {
         }
         float surgeP = 0.72 + 0.28 * vnoise(float2(t * 0.045, 2.2));
         float liftP = (p3 > 0.5) ? 0.10 : 0.0;
-        // No hard hem. Fade the curtain before the ridgeline so the photo sky stays the picture.
-        float skyRoom = 1.0 - smoothstep(0.16, 0.44, i.uv.y);
-        fx += auroraRibbons(pxy.x, pxy.y, t, p0, p1, colorA.rgb, colorB.rgb, surgeP, aspect, liftP, 0.0) * (0.40 * skyRoom);
+        // Luminous green through the open sky, softer magenta at the top. No hard hem.
+        // Fade only as the ridges begin, and do not tint the snow.
+        float3 rib = auroraRibbons(pxy.x, pxy.y, t, p0, p1, colorA.rgb, colorB.rgb, surgeP, aspect, liftP, 0.0, 0.03);
+        float mag = 1.0 - smoothstep(0.02, 0.18, i.uv.y);
+        rib *= lerp(float3(0.80, 1.40, 0.85), float3(1.15, 0.72, 1.22), mag);
+        float skyRoom = 1.0 - smoothstep(0.48, 0.70, i.uv.y);
+        fx += rib * (1.15 * skyRoom);
         float3 sky = plateLayer(0, i.uv).rgb + toLin(tonemap(fx));
-        return float4(coverPlates(sky, i.uv, 1.0), 1.0);
+        return float4(coverPlates(sky, i.uv, 0.0), 1.0);
     }
     float3 col = lerp(float3(0.002, 0.003, 0.008), float3(0.008, 0.010, 0.020), skyT);
     if (p2 > 0.02 || quality > 0.5) {
@@ -531,7 +545,7 @@ float4 PSAurora(VSOut i) : SV_Target {
     }
     float surge = 0.72 + 0.28 * vnoise(float2(t * 0.045, 2.2));
     float lift = (p3 > 0.5) ? 0.10 : 0.0;
-    col += auroraRibbons(pxy.x, pxy.y, t, p0, p1, colorA.rgb, colorB.rgb, surge, aspect, lift, 1.0);
+    col += auroraRibbons(pxy.x, pxy.y, t, p0, p1, colorA.rgb, colorB.rgb, surge, aspect, lift, 1.0, 0.0);
     if (plates == 0 && p3 < 0.5 && i.uv.y > 0.78) {
         float2 ap = i.uv * float2(width, height);
         float gnd = groundPx(ap.x, 0.88, 16.0, 460.0, 3.1);
@@ -578,7 +592,7 @@ float4 PSAurora(VSOut i) : SV_Target {
             } else {
                 float xoff = (vnoise(float2(uv.x * 4.0, uv.y * 60.0)) - 0.5) * 0.015 * (depth / 0.2);
                 float3 refl = auroraRibbons(uv.x * aspect + xoff, my, t, p0, p1 * 0.25, colorA.rgb, colorB.rgb,
-                                             surge, aspect, 0.10, 0.0);
+                                             surge, aspect, 0.10, 0.0, 0.0);
                 float streaks = 0.55 + 0.45 * vnoise(float2(uv.x * 1.5, uv.y * 140.0));
                 col = refl * streaks * exp(-depth / 0.22) * 0.85;
             }

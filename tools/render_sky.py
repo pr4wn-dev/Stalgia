@@ -413,7 +413,7 @@ def add_stars_mask(col, p, height, time, scroll, twinkle, density, tint, scale, 
         col[c] += bb[c] * shade * float(tint[c])
 
 
-def aurora_ribbons(px, py, t, height_k, rays_k, ca, cb, surge, aspect, lift, edge):
+def aurora_ribbons(px, py, t, height_k, rays_k, ca, cb, surge, aspect, lift, edge, hem_bias=0.0):
     curtain = np.zeros((3,) + px.shape, dtype=np.float32)
     ca = np.asarray(ca, dtype=np.float32)[:, None, None]
     cb = np.asarray(cb, dtype=np.float32)[:, None, None]
@@ -435,7 +435,7 @@ def aurora_ribbons(px, py, t, height_k, rays_k, ca, cb, surge, aspect, lift, edg
         gain = 0.55 + 0.55 * gain
         fold = fbm2(qx * 0.7 + layer * 2.2, np.full_like(px, 0.3 + t * 0.01))
         base = lerp(0.56, 0.38, height_k) - y_lift - lift
-        base = np.minimum(base + (fold - 0.48) * 0.16, 0.58)
+        base = np.minimum(base + (fold - 0.48) * 0.16, 0.58) + hem_bias
         above = base - py
         h_len = lerp(0.06, 0.24, height_k) * h_scale
         rx = qx + (px - 0.5 * aspect) * np.maximum(above, 0.0) * 0.35
@@ -444,7 +444,8 @@ def aurora_ribbons(px, py, t, height_k, rays_k, ca, cb, surge, aspect, lift, edg
         ray = 0.35 + 0.65 * np.power(saturate(ray_n), 2.5) + 0.25 * ray_f
         ray = lerp(1.0, ray, rays_k * ray_contrast)
         hs = h_len * (0.45 + 0.9 * ray)
-        body = smoothstep(-0.0025, 0.0015, above) * np.exp(-np.maximum(above, 0.0) / np.maximum(hs, 1e-3))
+        edge_lo, edge_hi = (-0.12, 0.04) if hem_bias else (-0.0025, 0.0015)
+        body = smoothstep(edge_lo, edge_hi, above) * np.exp(-np.maximum(above, 0.0) / np.maximum(hs, 1e-3))
         hem = np.exp(-np.maximum(above, 0.0) / 0.0045) * edge_boost
         knots = 0.6 + 0.8 * vnoise1(qx * 6.0)
         intensity = body * (1.0 + 2.4 * hem) * knots * gain
