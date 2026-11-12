@@ -1,16 +1,8 @@
 # Stalgia 1.12 art direction
 
-Bobby's correction, which overrides the "painterly" wording below: "Bob Ross" meant quality only. He does not want a painted look. The effects are photoreal, cinematic, and high-detail. Fireflies, snow, stars, and aurora are overlays. Layered photo plates replace the procedural scenery when the files are present, and the effect draws on top. Until those files arrive, the procedural scene stays as the stand-in. Do not paint more landscape into the shaders.
+Bobby's correction, which overrides the "painterly" wording below: "Bob Ross" meant quality only. He does not want a painted look. The effects are photoreal, cinematic, and high-detail. Fireflies, snow, stars, and aurora are overlays on real scenery.
 
-Plates are not in this repo. The loader checks `STALGIA_PLATES_DIR`, then `<exe>\plates`, then the app-data `plates` folder:
-
-```
-plates/<effect>/<preset>/far.png
-plates/<effect>/<preset>/mid.png
-plates/<effect>/<preset>/near.png
-```
-
-`far` is the distant opaque plate. `mid` and `near` are closer, use alpha, and parallax more. JPG and JPEG work too. A missing layer falls back to `plates/<effect>/sky/`. Folders: `fireflies/summer-dusk|deep-woods|meadow`, `snow/night-sky|pine-forest|window`, `stars/still-night|milky-way|nebula|warp`, `aurora/classic|magenta|polar|horizon`. No files means the procedural backdrop, unchanged. On a window preset the plate is the view through the glass. Fireflies draw between the far, mid, and near plates. Snow, stars, and aurora curtains draw in front of the stack.
+The shipped plates are WebP resources in the exe, decoded with WIC. Four layers, back to front: `layer-a-sky` (opaque, empty sky), `layer-b-mountains`, `layer-c-mid`, and `layer-d-foreground`. They are used for Summer dusk, Pine forest, Still night, Milky Way, and the default aurora. The other presets stay procedural. A folder under `STALGIA_PLATES_DIR`, `<exe>\plates`, or the app-data `plates` folder overrides a preset when `layer-a-sky` is present. Each layer drifts slowly, and the farthest moves least. Fireflies sit between mid and foreground. Stars, the Milky Way, and the aurora draw in the sky, behind the mountains. Most snow falls in front, with the small flakes behind the mid layer. Alpha at or above 250 snaps to 255. Aurora peaks and ice move toward an equal-channel gray, more on the bright ice than the dark water, and the curtain is kept soft so that gray reads as lit by it.
 
 The rest of this file is the review of 1.11.0. It covers Bobby's feedback on the released build, which he runs on his own PC:
 

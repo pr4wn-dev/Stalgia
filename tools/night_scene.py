@@ -240,7 +240,7 @@ def fly_grid(w, h, y0, y1, count, kind, speed, density):
                 ax=ax, ay=ay, reach_x=reach_x, reach_y=reach_y, k_mul=k_mul, b_max=b_max, s=s)
 
 
-def add_fireflies(col, x, y, w, h, time, speed, density, tint, band_lo, band_hi, count, kind, mask_a):
+def add_fireflies(col, x, y, w, h, time, speed, density, tint, band_lo, band_hi, count, kind, mask_a, halo_scale=1.0):
     """kind: 'far', 'mid', 'near'. A 3x3 search so the glow is not cut on the cell edge."""
     kind_i = 0 if kind == "far" else 1 if kind == "mid" else 2
     y0 = band_lo * h
@@ -287,10 +287,15 @@ def add_fireflies(col, x, y, w, h, time, speed, density, tint, band_lo, band_hi,
                 core_r = (lerp(0.7, 1.05, hs) if kind_i == 0 else lerp(1.2, 1.9, hs)) * s
                 bloom = (lerp(4.0, 6.0, hs) if kind_i == 0 else lerp(7.0, 10.0, hs)) * s
                 r0 = (2.6 if kind_i == 0 else 3.6) * s
+                if halo_scale > 1.0:
+                    bloom *= 1.5
+                    r0 *= 1.35
                 core = np.exp(-(dist * dist) / np.maximum(core_r * core_r, 0.2))
                 halo = np.power(1.0 / (1.0 + (dist / r0) ** 2), 1.5)
                 window = np.exp(-(dist * dist) / np.maximum(bloom * bloom, 0.4))
                 peak, gain = (1.05, 0.28) if kind_i == 0 else (1.7, 0.42)
+                if halo_scale > 1.0:
+                    gain *= 2.2
                 shade = (core * peak + halo * window * gain) * env
                 level = 0.45
                 glow = tint

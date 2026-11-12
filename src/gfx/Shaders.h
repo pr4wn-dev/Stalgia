@@ -87,31 +87,73 @@ VSOut VSMain(uint id : SV_VertexID) {
 
 Texture2D<float> noiseTex : register(t1);
 SamplerState noiseSamp : register(s1);
-// Photoreal plates. padA is a bitmask: 1 far, 2 mid, 4 near. Zero keeps the procedural stand-in.
-Texture2D plateFar : register(t2);
-Texture2D plateMid : register(t3);
-Texture2D plateNear : register(t4);
+// Photoreal plates. padA bits: 1 sky, 2 mountains, 4 mid, 8 foreground.
+// Zero keeps the procedural stand-in. The farthest layer drifts the least.
+Texture2D plateSky : register(t2);
+Texture2D plateMtn : register(t3);
+Texture2D plateMid : register(t4);
+Texture2D plateFg : register(t5);
+
+float2 plateShift(int which) {
+    float depth = (which == 0) ? 0.22 : (which == 1) ? 0.55 : (which == 2) ? 1.05 : 1.75;
+    float2 look = float2(lookX, -lookY) * (0.035 + 0.085 * depth);
+    float ang = frac(time / 3600.0) * 6.2831853;
+    float drift = sin(ang * 2.0 + float(which) * 0.7);
+    float driftY = sin(ang + 1.4) * 0.35;
+    float amp = 0.0012 + 0.0055 * depth;
+    return look + float2(drift, driftY) * amp;
+}
 
 float4 plateLayer(int which, float2 uv) {
-    float depth = (which == 0) ? 0.012 : ((which == 1) ? 0.036 : 0.078);
-    float2 u = uv + float2(lookX, -lookY) * depth;
-    if (which == 0) return plateFar.Sample(noiseSamp, u);
-    if (which == 1) return plateMid.Sample(noiseSamp, u);
-    return plateNear.Sample(noiseSamp, u);
+    float2 u = saturate(uv + plateShift(which));
+    if (which <= 0) return plateSky.Sample(noiseSamp, u);
+    if (which == 1) return plateMtn.Sample(noiseSamp, u);
+    if (which == 2) return plateMid.Sample(noiseSamp, u);
+    return plateFg.Sample(noiseSamp, u);
+}
+
+int plateBit(int layer) {
+    if (layer <= 0) return 1;
+    if (layer == 1) return 2;
+    if (layer == 2) return 4;
+    return 8;
+}
+
+void overPlate(inout float3 col, int layer, float2 uv) {
+    int m = (int)(padA + 0.5);
+    if ((m & plateBit(layer)) == 0) return;
+    float4 s = plateLayer(layer, uv);
+    col = lerp(col, s.rgb, s.a);
+}
+
+// Bright ice on the aurora plates picks up a little of the curtain behind it.
+float3 coverPlates(float3 sky, float2 uv, float spill) {
+    float3 col = sky;
+    [unroll] for (int layer = 1; layer <= 3; layer++) {
+        int m = (int)(padA + 0.5);
+        if ((m & plateBit(layer)) == 0) continue;
+        float4 s = plateLayer(layer, uv);
+        float3 rgb = s.rgb;
+        if (spill > 0.5) {
+            float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+            float ice = smoothstep(0.16, 0.55, luma);
+            float g = max(sky.r, max(sky.g, sky.b));
+            float3 tint = sky / max(g, 1e-3);
+            // A hint of the curtain on the brightest snow. The plate itself stays near neutral.
+            float catchLight = ice * saturate((g - 0.18) * 1.1) * 0.28;
+            rgb = lerp(rgb, rgb * lerp(float3(1.0, 1.0, 1.0), tint, 0.40) + tint * 0.012, catchLight);
+        }
+        col = lerp(col, rgb, s.a);
+    }
+    return col;
 }
 
 float3 plateStack(float2 uv) {
-    int m = (int)(padA + 0.5);
     float3 c = float3(0.004, 0.006, 0.014);
-    if ((m & 1) != 0) c = plateLayer(0, uv).rgb;
-    if ((m & 2) != 0) {
-        float4 s = plateLayer(1, uv);
-        c = lerp(c, s.rgb, s.a);
-    }
-    if ((m & 4) != 0) {
-        float4 s = plateLayer(2, uv);
-        c = lerp(c, s.rgb, s.a);
-    }
+    if (((int)(padA + 0.5) & 1) != 0) c = plateLayer(0, uv).rgb;
+    overPlate(c, 1, uv);
+    overPlate(c, 2, uv);
+    overPlate(c, 3, uv);
     return c;
 }
 
@@ -321,19 +363,21 @@ float4 PSStarfield(VSOut i) : SV_Target {
     float along = p.x * 0.95 - p.y * 0.78;
     float bandScale = max(1.0 - travel * 0.55, 0.42);
     int plates = (int)(padA + 0.5);
-    float3 col;
-    if (plates != 0) {
-        // The photo is the sky. Stars, streaks, and meteors composite on top of it.
-        col = plateStack(i.uv);
-    } else {
-    float skyT = smoothstep(0.0, 0.9, uv.y);
-    col = lerp(float3(0.004, 0.006, 0.018), float3(0.009, 0.013, 0.030), skyT);
-    col += float3(0.005, 0.009, 0.016) * smoothstep(0.55, 1.0, uv.y);
+    // On a photographed night the full procedural veil reads as a brown fog.
+    // Still night keeps a faint silver arm. Milky Way (density > 1.35) is stronger.
+    if (plates != 0) bandScale *= (density > 1.35) ? 0.70 : 0.36;
+    float3 col = float3(0.0, 0.0, 0.0);
+    if (plates == 0) {
+        float skyT = smoothstep(0.0, 0.9, uv.y);
+        col = lerp(float3(0.004, 0.006, 0.018), float3(0.009, 0.013, 0.030), skyT);
+        col += float3(0.005, 0.009, 0.016) * smoothstep(0.55, 1.0, uv.y);
+    }
     // Wide gaussian, evaluated on every pixel. The old cheap>0.003 test cut this
     // glow on two straight diagonals while it was still bright.
     float env = exp(-(diag * diag) / (2.0 * 0.30 * 0.30));
     float coreA = exp(-((along - 0.15) * (along - 0.15)) / 0.28);
     float3 glowCol = lerp(float3(0.55, 0.66, 0.98), float3(0.92, 0.68, 0.40), coreA);
+    if (plates != 0) glowCol = lerp(glowCol, glowCol * float3(0.70, 0.84, 1.12), 0.62);
     float3 glow = glowCol * (0.18 + 0.42 * coreA) * env * bandScale;
     if (quality > 0.5 && env > 0.35) {
         // Detail fades out before the branch, so skipping it leaves no edge.
@@ -359,13 +403,16 @@ float4 PSStarfield(VSOut i) : SV_Target {
         float haze = (h1 > 1.0 - 0.38 * band) ? pow(h2, 2.4) * 0.28 * (1.0 - dust) : 0.0;
         detail += haze * glowCol * bandScale;
         float ext = lerp(1.0, 1.0 - 0.48 * dust * band, fade);
+        // Dust lanes carved into the veil become light rays on a photograph.
+        if (plates != 0) ext = lerp(1.0, ext, (density > 1.35) ? 0.22 : 0.0);
         glow *= ext;
-        glow += detail * fade;
+        // Filaments and knots read as searchlight beams on a photograph. Keep a little dust on the Milky Way.
+        float detailGain = (plates != 0) ? ((density > 1.35) ? 0.18 : 0.0) : 1.0;
+        glow += detail * fade * detailGain;
     }
     // Shoulder on the glow only, so the warm core keeps rift detail and stars stay bright.
     glow = glow / (1.0 + glow * 0.90);
     col += glow;
-    }
     float skyKeep = 0.12 + 0.32 * exp(-(diag * diag) * 3.5);
 
     float peak = max(max(colorA.r, colorA.g), max(colorA.b, 0.001));
@@ -443,6 +490,11 @@ float4 PSStarfield(VSOut i) : SV_Target {
             col += headG * fade * float3(1.15, 1.05, 0.90) + trail * fade * float3(1.05, 0.72, 0.42);
         }
     }
+    if (plates != 0) {
+        // Stars and the Milky Way stay in the empty sky, behind the ridges.
+        float3 sky = plateLayer(0, i.uv).rgb + toLin(tonemap(col));
+        return float4(coverPlates(sky, i.uv, 0.0), 1.0);
+    }
     return float4(toLin(tonemap(col)), 1.0);
 }
 
@@ -457,7 +509,22 @@ float4 PSAurora(VSOut i) : SV_Target {
     float t = time * speed;
     float skyT = smoothstep(0.0, 0.88, uv.y);
     int plates = (int)(padA + 0.5);
-    float3 col = (plates != 0) ? plateStack(i.uv) : lerp(float3(0.002, 0.003, 0.008), float3(0.008, 0.010, 0.020), skyT);
+    if (plates != 0) {
+        // Curtain and stars in the sky only. Mountains cover them. Ice takes a little of that light.
+        float3 fx = float3(0.0, 0.0, 0.0);
+        if (p2 > 0.02 || quality > 0.5) {
+            float2 sp = float2((i.uv.x - 0.5) * aspect, i.uv.y - 0.5);
+            starLayer(fx, sp, 70.0, 0.7, 0.045, 0.45, 0.65, float3(0.85, 0.90, 1.0), 1.0);
+        }
+        float surgeP = 0.72 + 0.28 * vnoise(float2(t * 0.045, 2.2));
+        float liftP = (p3 > 0.5) ? 0.10 : 0.0;
+        // No hard hem. Fade the curtain before the ridgeline so the photo sky stays the picture.
+        float skyRoom = 1.0 - smoothstep(0.16, 0.44, i.uv.y);
+        fx += auroraRibbons(pxy.x, pxy.y, t, p0, p1, colorA.rgb, colorB.rgb, surgeP, aspect, liftP, 0.0) * (0.40 * skyRoom);
+        float3 sky = plateLayer(0, i.uv).rgb + toLin(tonemap(fx));
+        return float4(coverPlates(sky, i.uv, 1.0), 1.0);
+    }
+    float3 col = lerp(float3(0.002, 0.003, 0.008), float3(0.008, 0.010, 0.020), skyT);
     if (p2 > 0.02 || quality > 0.5) {
         float2 sp = float2((uv.x - 0.5) * aspect, uv.y - 0.5);
         starLayer(col, sp, 70.0, 0.7, 0.045, 0.45, 0.65, float3(0.85, 0.90, 1.0), 1.0);
@@ -684,11 +751,17 @@ void addFlyLayer(inout float3 col, inout float maskA, float2 px, float y0, float
                     float coreR = ((kind == 0) ? lerp(0.7, 1.05, hs) : lerp(1.2, 1.9, hs)) * s;
                     float bloom = ((kind == 0) ? lerp(4.0, 6.0, hs) : lerp(7.0, 10.0, hs)) * s;
                     float r0 = ((kind == 0) ? 2.6 : 3.6) * s;
+                    float peak = (kind == 0) ? 1.05 : 1.7;
+                    float gain = (kind == 0) ? 0.28 : 0.42;
+                    // Brighter lamp on the photograph. Stay inside the 3x3 search so the halo is not cut.
+                    if ((int)(padA + 0.5) != 0) {
+                        bloom *= 1.5;
+                        r0 *= 1.35;
+                        gain *= 2.2;
+                    }
                     float core = exp(-dist * dist / max(coreR * coreR, 0.2));
                     float halo = pow(1.0 / (1.0 + (dist / r0) * (dist / r0)), 1.5);
                     float window = exp(-dist * dist / max(bloom * bloom, 0.4));
-                    float peak = (kind == 0) ? 1.05 : 1.7;
-                    float gain = (kind == 0) ? 0.28 : 0.42;
                     shade = (core * peak + halo * window * gain) * env;
                     glow = lerp(tint, float3(1.0, 0.965, 0.784), 0.62 * env);
                 }
@@ -757,23 +830,21 @@ float4 PSFireflies(VSOut i) : SV_Target {
     int style = (direction < 0.5) ? 0 : ((direction < 1.5) ? 1 : 2);
     int plates = (int)(padA + 0.5);
     if (plates != 0 && p3 > -0.5) {
-        // Flies sit between the photo layers: far air, then the mid treeline, then the near trees.
-        float3 col = ((plates & 1) != 0) ? plateLayer(0, i.uv).rgb : float3(0.010, 0.016, 0.030);
-        float flyA = 0.0;
+        // Dusk plate is warm. Pull the lamp color toward that amber so the bugs match the light.
         float3 glow = max(colorA.rgb, float3(0.02, 0.02, 0.02));
-        if (quality > 0.5) addFlyLayer(col, flyA, px, height * 0.30, height * 0.50, style == 1 ? 16.0 : 18.0, glow, 0);
-        if ((plates & 2) != 0) {
-            float4 mid = plateLayer(1, i.uv);
-            col = lerp(col, mid.rgb, mid.a);
-        }
-        addFlyLayer(col, flyA, px, height * 0.46, height * 0.72, 18.0, glow, 1);
-        if ((plates & 4) != 0) {
-            float4 nr = plateLayer(2, i.uv);
-            col = lerp(col, nr.rgb, nr.a);
-        }
-        if (style != 1) addFlyLayer(col, flyA, px, height * 0.55, height * 0.92, 2.0, glow, 2);
-        col *= (style == 0) ? 2.20 : 1.9;
-        return float4(toLin(tonemap(col)), 1.0);
+        glow = lerp(glow, float3(1.0, 0.58, 0.20), 0.62);
+        float3 fx = float3(0.0, 0.0, 0.0);
+        float flyA = 0.0;
+        // The open gap is the dark treeline and the near meadow. Closer grass covers the bottom of the band.
+        if (quality > 0.5) addFlyLayer(fx, flyA, px, height * 0.50, height * 0.64, 18.0, glow, 0);
+        addFlyLayer(fx, flyA, px, height * 0.54, height * 0.72, 20.0, glow, 1);
+        if (style != 1) addFlyLayer(fx, flyA, px, height * 0.60, height * 0.78, 3.0, glow, 2);
+        float3 col = ((plates & 1) != 0) ? plateLayer(0, i.uv).rgb : float3(0.02, 0.015, 0.012);
+        overPlate(col, 1, i.uv);
+        overPlate(col, 2, i.uv);
+        col += toLin(tonemap(fx));
+        overPlate(col, 3, i.uv);
+        return float4(col, 1.0);
     }
     float3 col;
     float gFar, gMid, gNear, aFar, aMid, aNear, cellF, cellM, cellN;
@@ -869,15 +940,20 @@ float4 PSSnow(VSOut i) : SV_Target {
     float3 ambient = float3(0.49, 0.56, 0.70);
     int plates = (int)(padA + 0.5);
     if (plates != 0 && backdrop < 1.5 && p3 > -0.5) {
-        col = plateStack(i.uv);
-        float3 tint = flake * float3(0.55, 0.62, 0.74);
+        // Moonlit snow on the plate is cool white, not the dark procedural ambient.
+        float3 nearTint = lerp(saturate(flake), float3(0.93, 0.95, 1.0), 0.72);
+        float3 farTint = nearTint * float3(0.70, 0.78, 0.92);
+        col = ((plates & 1) != 0) ? plateLayer(0, i.uv).rgb : float3(0.01, 0.015, 0.03);
+        overPlate(col, 1, i.uv);
         if (quality > 0.5) {
-            snowDisc(col, px, 52.0, 44.0, 1.4, 2.2, 0.55, 0.40, 0.55, 32.0, 4.5, 0.70, 1.0, 900.0, 1.0, tint, 0.0);
+            snowDisc(col, px, 52.0, 44.0, 1.4, 2.2, 0.55, 0.40, 0.55, 32.0, 4.5, 0.70, 1.0, 900.0, 1.0, farTint, 0.0);
         }
-        snowDisc(col, px, 96.0, 84.0, 3.2, 5.2, 0.9, 0.62, 0.82, 64.0, 12.0, 0.50, 1.0, 340.0, 2.0, tint, 0.0);
-        snowDisc(col, px, 180.0, 160.0, 6.0, 9.0, 1.3, 0.75, 0.90, 112.0, 22.0, 0.35, 1.28, 80.0, 3.0, tint, 0.0);
-        snowDisc(col, px, 520.0, 480.0, 18.0, 30.0, 4.0, 0.10, 0.18, 200.0, 36.0, 0.25, 1.25, 5.0, 4.0, tint, 0.0);
-        return float4(toLin(tonemap(col)), 1.0);
+        overPlate(col, 2, i.uv);
+        overPlate(col, 3, i.uv);
+        snowDisc(col, px, 96.0, 84.0, 3.2, 5.2, 0.9, 0.62, 0.82, 64.0, 12.0, 0.50, 1.0, 340.0, 2.0, nearTint, 0.0);
+        snowDisc(col, px, 180.0, 160.0, 6.0, 9.0, 1.3, 0.75, 0.90, 112.0, 22.0, 0.35, 1.28, 80.0, 3.0, nearTint, 0.0);
+        snowDisc(col, px, 520.0, 480.0, 18.0, 30.0, 4.0, 0.10, 0.18, 200.0, 36.0, 0.25, 1.25, 5.0, 4.0, nearTint, 0.0);
+        return float4(col, 1.0);
     }
     if (backdrop < 0.5) {
         col = lerp(float3(0.010, 0.025, 0.070), float3(0.04, 0.08, 0.14), i.uv.y) * 2.4;

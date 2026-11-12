@@ -157,7 +157,7 @@ private:
     ComPtr<ID3D11Texture2D> m_noiseTex;
     ComPtr<ID3D11ShaderResourceView> m_noiseSrv;
     ComPtr<ID3D11SamplerState> m_noiseSamp;
-    ComPtr<ID3D11ShaderResourceView> m_plateSrv[3];
+    ComPtr<ID3D11ShaderResourceView> m_plateSrv[4];
     std::wstring m_plateKey;
     ID3D11Device* m_plateDevice = nullptr;
     float m_plateMask = 0.0f;

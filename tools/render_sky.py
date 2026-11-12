@@ -254,11 +254,13 @@ def milky(p, uv):
     return diag, along, core, env, sky_keep
 
 
-def paint_band(col, p, uv, pixel_x, pixel_y, band_scale):
+def paint_band(col, p, uv, pixel_x, pixel_y, band_scale, detail_gain=1.0, cool=0.0, dust_gain=1.0):
     diag, along, core, env, sky_keep = milky(p, uv)
     arm_col = np.array([0.55, 0.66, 0.98], dtype=np.float32)
     core_col = np.array([0.92, 0.68, 0.40], dtype=np.float32)
     glow_col = lerp(arm_col[:, None, None], core_col[:, None, None], core)
+    if cool:
+        glow_col = lerp(glow_col, glow_col * np.array([0.70, 0.84, 1.12], dtype=np.float32)[:, None, None], cool)
     glow = np.zeros_like(col)
     base = (0.18 + 0.42 * core) * env * band_scale
     for c in range(3):
@@ -279,16 +281,16 @@ def paint_band(col, p, uv, pixel_x, pixel_y, band_scale):
     filaments = filaments * filaments
     dust = saturate(rift * rift_span * 0.85 + filaments * 0.40 * band)
     detail_amp = (0.22 + 0.48 * core) * (0.40 + 0.60 * clouds) * band * (1.0 - 0.70 * dust) * band_scale
-    detail_amp = np.where(detail_on, detail_amp, 0.0) * fade
+    detail_amp = np.where(detail_on, detail_amp, 0.0) * fade * detail_gain
     knots = smoothstep(0.78, 0.90, fbm2(along * 3.0, diag_w * 8.0))
-    knot_amp = np.where(detail_on, knots * 0.10 * band * band_scale * fade, 0.0)
+    knot_amp = np.where(detail_on, knots * 0.10 * band * band_scale * fade, 0.0) * detail_gain
     gx = np.floor(pixel_x * 0.75)
     gy = np.floor(pixel_y * 0.75)
     h1 = hash12(gx, gy)
     h2 = hash12(gx + 19.0, gy + 3.0)
     haze = np.where(h1 > (1.0 - 0.38 * band), np.power(h2, 2.4) * 0.28 * (1.0 - dust), 0.0)
-    haze = np.where(detail_on, haze * band_scale * fade, 0.0)
-    ext = lerp(1.0, 1.0 - 0.48 * dust * band, np.where(detail_on, fade, 0.0))
+    haze = np.where(detail_on, haze * band_scale * fade, 0.0) * detail_gain
+    ext = lerp(1.0, 1.0 - 0.48 * dust * band * dust_gain, np.where(detail_on, fade, 0.0))
     pink = np.array([1.0, 0.40, 0.48], dtype=np.float32)
     for c in range(3):
         glow[c] *= ext

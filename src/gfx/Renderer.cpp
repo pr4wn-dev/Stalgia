@@ -929,14 +929,15 @@ void Renderer::drawFullscreen(ID3D11PixelShader* ps, const void* data, UINT byte
         ID3D11SamplerState* ns = m_noiseSamp.get();
         m_context->PSSetSamplers(1, 1, &ns);
     }
-    ID3D11ShaderResourceView* plates[3] = {m_plateSrv[0].get(), m_plateSrv[1].get(), m_plateSrv[2].get()};
-    m_context->PSSetShaderResources(2, 3, plates);
+    ID3D11ShaderResourceView* plates[4] = {
+        m_plateSrv[0].get(), m_plateSrv[1].get(), m_plateSrv[2].get(), m_plateSrv[3].get()};
+    m_context->PSSetShaderResources(2, 4, plates);
     m_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
     m_context->Draw(3, 0);
     ID3D11ShaderResourceView* none = nullptr;
     m_context->PSSetShaderResources(1, 1, &none);
-    ID3D11ShaderResourceView* nonePlates[3] = {nullptr, nullptr, nullptr};
-    m_context->PSSetShaderResources(2, 3, nonePlates);
+    ID3D11ShaderResourceView* nonePlates[4] = {nullptr, nullptr, nullptr, nullptr};
+    m_context->PSSetShaderResources(2, 4, nonePlates);
 }
 
 void Renderer::bindPlates(const wchar_t* effect, const wchar_t* preset) {
@@ -955,7 +956,7 @@ void Renderer::bindPlates(const wchar_t* effect, const wchar_t* preset) {
     for (auto& srv : m_plateSrv) srv.reset();
     PlateLayers loaded;
     if (!loadPlateLayers(m_device.get(), effect, preset, loaded)) return;
-    for (int i = 0; i < 3; ++i) m_plateSrv[i] = std::move(loaded.layer[i]);
+    for (int i = 0; i < 4; ++i) m_plateSrv[i] = std::move(loaded.layer[i]);
     m_plateMask = loaded.mask;
 }
 
