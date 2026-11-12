@@ -264,6 +264,17 @@ void Config::clampSettings() {
     m_s.myco.detail = std::clamp(m_s.myco.detail, 0.0f, 1.0f);
     m_s.myco.breatheAmt = std::clamp(m_s.myco.breatheAmt, 0.0f, 2.0f);
     clampLook(m_s.myco.look);
+    m_s.fireflies.speed = std::clamp(m_s.fireflies.speed, 0.05f, 2.0f);
+    m_s.fireflies.density = std::clamp(m_s.fireflies.density, 0.15f, 2.2f);
+    m_s.fireflies.mist = std::clamp(m_s.fireflies.mist, 0.0f, 1.0f);
+    m_s.fireflies.stars = std::clamp(m_s.fireflies.stars, 0.0f, 1.0f);
+    m_s.fireflies.woods = std::clamp(m_s.fireflies.woods, 0.0f, 1.0f);
+    clampLook(m_s.fireflies.look);
+    m_s.snow.speed = std::clamp(m_s.snow.speed, 0.05f, 2.0f);
+    m_s.snow.density = std::clamp(m_s.snow.density, 0.15f, 2.2f);
+    m_s.snow.wind = std::clamp(m_s.snow.wind, -1.0f, 1.0f);
+    m_s.snow.backdrop = std::clamp(m_s.snow.backdrop, 0, 2);
+    clampLook(m_s.snow.look);
 }
 
 bool Config::migrateStaleTunes() {
@@ -335,7 +346,37 @@ bool Config::migrateStaleTunes() {
         m_s.tuneMyco = kTuneMyco;
         dirty = true;
     }
+    if (m_s.tuneFireflies < kTuneFireflies) {
+        LOG_INFO("Resetting fireflies settings (tune %d → %d)", m_s.tuneFireflies, kTuneFireflies);
+        const bool para = m_s.fireflies.look.parallax;
+        m_s.fireflies = FireflySettings{};
+        m_s.fireflies.look.parallax = para;
+        m_s.tuneFireflies = kTuneFireflies;
+        dirty = true;
+    }
+    if (m_s.tuneSnow < kTuneSnow) {
+        LOG_INFO("Resetting snow settings (tune %d → %d)", m_s.tuneSnow, kTuneSnow);
+        const bool para = m_s.snow.look.parallax;
+        m_s.snow = SnowSettings{};
+        m_s.snow.look.parallax = para;
+        m_s.tuneSnow = kTuneSnow;
+        dirty = true;
+    }
     return dirty;
+}
+
+namespace {
+void stampCurrentTunes(AppSettings& s) {
+    s.version = Config::kFormatVersion;
+    s.tuneMatrix = Config::kTuneMatrix;
+    s.tuneStarfield = Config::kTuneStarfield;
+    s.tuneAurora = Config::kTuneAurora;
+    s.tuneLava = Config::kTuneLava;
+    s.tuneApe = Config::kTuneApe;
+    s.tuneMyco = Config::kTuneMyco;
+    s.tuneFireflies = Config::kTuneFireflies;
+    s.tuneSnow = Config::kTuneSnow;
+}
 }
 
 bool Config::load() {
@@ -345,13 +386,7 @@ bool Config::load() {
     if (!fileExists(m_path)) {
         m_fresh = true;
         m_s = AppSettings{};
-        m_s.version = kFormatVersion;
-        m_s.tuneMatrix = kTuneMatrix;
-        m_s.tuneStarfield = kTuneStarfield;
-        m_s.tuneAurora = kTuneAurora;
-        m_s.tuneLava = kTuneLava;
-        m_s.tuneApe = kTuneApe;
-        m_s.tuneMyco = kTuneMyco;
+        stampCurrentTunes(m_s);
         LOG_INFO("No config at %s — writing defaults (format %d)", narrow(m_path).c_str(), kFormatVersion);
         save();
         return true;
@@ -365,6 +400,7 @@ bool Config::load() {
         LOG_WARN("Config file empty, using defaults");
         copyFile(m_path, m_path + L".bad");
         m_s = AppSettings{};
+        stampCurrentTunes(m_s);
         save();
         return true;
     }
@@ -372,13 +408,7 @@ bool Config::load() {
         LOG_WARN("Failed to parse config; copied it to config.json.bad and loading defaults");
         copyFile(m_path, m_path + L".bad");
         m_s = AppSettings{};
-        m_s.version = kFormatVersion;
-        m_s.tuneMatrix = kTuneMatrix;
-        m_s.tuneStarfield = kTuneStarfield;
-        m_s.tuneAurora = kTuneAurora;
-        m_s.tuneLava = kTuneLava;
-        m_s.tuneApe = kTuneApe;
-        m_s.tuneMyco = kTuneMyco;
+        stampCurrentTunes(m_s);
         save();
         return true;
     }
@@ -390,8 +420,8 @@ bool Config::load() {
                  kFormatVersion);
         save();
     }
-    LOG_INFO("Loaded config from %s effect=%s format=%d tune.ape=%d widget=%d",
-             narrow(m_path).c_str(), m_s.effect.c_str(), m_s.version, m_s.tuneApe,
+    LOG_INFO("Loaded config from %s effect=%s format=%d tune.fireflies=%d tune.snow=%d widget=%d",
+             narrow(m_path).c_str(), m_s.effect.c_str(), m_s.version, m_s.tuneFireflies, m_s.tuneSnow,
              m_s.showWidget ? 1 : 0);
     return true;
 }
@@ -465,6 +495,8 @@ bool Config::parse(const std::string& text) {
     m_s.tuneLava = 0;
     m_s.tuneApe = 0;
     m_s.tuneMyco = 0;
+    m_s.tuneFireflies = 0;
+    m_s.tuneSnow = 0;
 
     if (const Kv* v = findKv(kvs, "version")) m_s.version = parseInt(v->raw, 1);
     if (const Kv* v = findKv(kvs, "fps")) m_s.fps = parseInt(v->raw, m_s.fps);
@@ -503,6 +535,8 @@ bool Config::parse(const std::string& text) {
             if (const Kv* c = findKv(tk, "lava")) m_s.tuneLava = parseInt(c->raw, 0);
             if (const Kv* c = findKv(tk, "ape")) m_s.tuneApe = parseInt(c->raw, 0);
             if (const Kv* c = findKv(tk, "myco")) m_s.tuneMyco = parseInt(c->raw, 0);
+            if (const Kv* c = findKv(tk, "fireflies")) m_s.tuneFireflies = parseInt(c->raw, 0);
+            if (const Kv* c = findKv(tk, "snow")) m_s.tuneSnow = parseInt(c->raw, 0);
         }
     } else {
         // Pre-1.5.0 files have no tune object. Only Code Ape's defaults actually
@@ -513,6 +547,8 @@ bool Config::parse(const std::string& text) {
         m_s.tuneLava = kTuneLava;
         m_s.tuneApe = 0;
         m_s.tuneMyco = 0;
+        m_s.tuneFireflies = 0;
+        m_s.tuneSnow = 0;
     }
 
     if (const Kv* v = findKv(kvs, "matrix")) {
@@ -645,6 +681,34 @@ bool Config::parse(const std::string& text) {
             readLook(mk, m_s.myco.look);
         }
     }
+    if (const Kv* v = findKv(kvs, "fireflies")) {
+        size_t j = 0;
+        std::vector<Kv> mk;
+        if (parseObjectKvs(v->raw, j, mk)) {
+            if (const Kv* c = findKv(mk, "color"))
+                m_s.fireflies.color = hexFromString(unquote(c->raw), m_s.fireflies.color);
+            if (const Kv* c = findKv(mk, "speed")) m_s.fireflies.speed = parseFinite(c->raw, m_s.fireflies.speed);
+            if (const Kv* c = findKv(mk, "density"))
+                m_s.fireflies.density = parseFinite(c->raw, m_s.fireflies.density);
+            if (const Kv* c = findKv(mk, "mist")) m_s.fireflies.mist = parseFinite(c->raw, m_s.fireflies.mist);
+            if (const Kv* c = findKv(mk, "stars")) m_s.fireflies.stars = parseFinite(c->raw, m_s.fireflies.stars);
+            if (const Kv* c = findKv(mk, "woods")) m_s.fireflies.woods = parseFinite(c->raw, m_s.fireflies.woods);
+            readLook(mk, m_s.fireflies.look);
+        }
+    }
+    if (const Kv* v = findKv(kvs, "snow")) {
+        size_t j = 0;
+        std::vector<Kv> mk;
+        if (parseObjectKvs(v->raw, j, mk)) {
+            if (const Kv* c = findKv(mk, "color"))
+                m_s.snow.color = hexFromString(unquote(c->raw), m_s.snow.color);
+            if (const Kv* c = findKv(mk, "speed")) m_s.snow.speed = parseFinite(c->raw, m_s.snow.speed);
+            if (const Kv* c = findKv(mk, "density")) m_s.snow.density = parseFinite(c->raw, m_s.snow.density);
+            if (const Kv* c = findKv(mk, "wind")) m_s.snow.wind = parseFinite(c->raw, m_s.snow.wind);
+            if (const Kv* c = findKv(mk, "backdrop")) m_s.snow.backdrop = parseInt(c->raw, m_s.snow.backdrop);
+            readLook(mk, m_s.snow.look);
+        }
+    }
     return true;
 }
 
@@ -658,10 +722,12 @@ std::string Config::serialize() const {
     o << "    \"aurora\": " << kTuneAurora << ",\n";
     o << "    \"lava\": " << kTuneLava << ",\n";
     o << "    \"ape\": " << kTuneApe << ",\n";
-    o << "    \"myco\": " << kTuneMyco << "\n";
+    o << "    \"myco\": " << kTuneMyco << ",\n";
+    o << "    \"fireflies\": " << kTuneFireflies << ",\n";
+    o << "    \"snow\": " << kTuneSnow << "\n";
     o << "  },\n";
     o << "  \"fps\": " << m_s.fps << ",\n";
-    o << "  \"effect\": \"" << m_s.effect << "\",\n";
+    o << "  \"effect\": \"" << jsonEscape(m_s.effect) << "\",\n";
     o << "  \"favorites\": [";
     for (size_t fi = 0; fi < m_s.favorites.size(); ++fi) {
         if (fi) o << ", ";
@@ -762,6 +828,23 @@ std::string Config::serialize() const {
     o << "    \"breatheAmt\": " << m_s.myco.breatheAmt << ",\n";
     o << "    \"imagePath\": \"" << jsonEscape(m_s.myco.imagePath) << "\",\n";
     writeLook(o, m_s.myco.look);
+    o << "  },\n";
+    o << "  \"fireflies\": {\n";
+    o << "    \"color\": \"" << hexToString(m_s.fireflies.color) << "\",\n";
+    o << "    \"speed\": " << m_s.fireflies.speed << ",\n";
+    o << "    \"density\": " << m_s.fireflies.density << ",\n";
+    o << "    \"mist\": " << m_s.fireflies.mist << ",\n";
+    o << "    \"stars\": " << m_s.fireflies.stars << ",\n";
+    o << "    \"woods\": " << m_s.fireflies.woods << ",\n";
+    writeLook(o, m_s.fireflies.look);
+    o << "  },\n";
+    o << "  \"snow\": {\n";
+    o << "    \"color\": \"" << hexToString(m_s.snow.color) << "\",\n";
+    o << "    \"speed\": " << m_s.snow.speed << ",\n";
+    o << "    \"density\": " << m_s.snow.density << ",\n";
+    o << "    \"wind\": " << m_s.snow.wind << ",\n";
+    o << "    \"backdrop\": " << m_s.snow.backdrop << ",\n";
+    writeLook(o, m_s.snow.look);
     o << "  }\n";
     o << "}\n";
     return o.str();

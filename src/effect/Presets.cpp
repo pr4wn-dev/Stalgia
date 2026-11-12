@@ -17,6 +17,8 @@ EffectLook* lookMut(AppSettings& s, const std::string& id) {
     if (id == "lava") return &s.lava.look;
     if (id == "ape") return &s.ape.look;
     if (id == "myco") return &s.myco.look;
+    if (id == "fireflies") return &s.fireflies.look;
+    if (id == "snow") return &s.snow.look;
     return nullptr;
 }
 
@@ -133,6 +135,16 @@ std::vector<Knob> knobsFor(const std::string& id) {
         }
         addButton(v, KnobSection::Look, L"Choose image…", 0);
         addSwatch(v, L"Code color", 0);
+    } else if (id == "fireflies") {
+        addSlider(v, KnobSection::Motion, L"Speed", 0, 0.05f, 2.0f);
+        addSlider(v, KnobSection::Look, L"Density", 1, 0.15f, 2.2f);
+        addToggle(v, KnobSection::Look, L"Stars", 0);
+        addSwatch(v, L"Glow", 0);
+    } else if (id == "snow") {
+        addSlider(v, KnobSection::Motion, L"Speed", 0, 0.05f, 2.0f);
+        addSlider(v, KnobSection::Motion, L"Wind", 2, -1.0f, 1.0f);
+        addSlider(v, KnobSection::Look, L"Density", 1, 0.15f, 2.2f);
+        addSwatch(v, L"Flakes", 0);
     }
     addShared(v);
     return v;
@@ -182,6 +194,8 @@ const EffectLook* effectLook(const AppSettings& s, const std::string& id) {
     if (id == "lava") return &s.lava.look;
     if (id == "ape") return &s.ape.look;
     if (id == "myco") return &s.myco.look;
+    if (id == "fireflies") return &s.fireflies.look;
+    if (id == "snow") return &s.snow.look;
     return nullptr;
 }
 
@@ -279,6 +293,13 @@ float knobValue(const AppSettings& s, const std::string& id, int index) {
         if (index == 6) return m.detail;
         if (index == 7) return m.breatheAmt;
         if (index == 8) return m.brightness;
+    } else if (id == "fireflies") {
+        if (index == 0) return s.fireflies.speed;
+        if (index == 1) return s.fireflies.density;
+    } else if (id == "snow") {
+        if (index == 0) return s.snow.speed;
+        if (index == 1) return s.snow.density;
+        if (index == 2) return s.snow.wind;
     }
     return 0;
 }
@@ -379,6 +400,13 @@ void setKnob(AppSettings& s, const std::string& id, int index, float t) {
         else if (index == 6) m.detail = v;
         else if (index == 7) m.breatheAmt = v;
         else if (index == 8) m.brightness = v;
+    } else if (id == "fireflies") {
+        if (index == 0) s.fireflies.speed = v;
+        else if (index == 1) s.fireflies.density = v;
+    } else if (id == "snow") {
+        if (index == 0) s.snow.speed = v;
+        else if (index == 1) s.snow.density = v;
+        else if (index == 2) s.snow.wind = v;
     }
 }
 
@@ -397,6 +425,8 @@ bool knobToggle(const AppSettings& s, const std::string& id, int index) {
         if (index == 0) return s.myco.breathing;
         if (index == 1) return s.myco.eyeGlow;
         if (index == 2) return s.myco.colorize;
+    } else if (id == "fireflies") {
+        if (index == 0) return s.fireflies.stars > 0.5f;
     }
     return false;
 }
@@ -423,6 +453,8 @@ void setKnobToggle(AppSettings& s, const std::string& id, int index, bool on) {
         if (index == 0) s.myco.breathing = on;
         else if (index == 1) s.myco.eyeGlow = on;
         else if (index == 2) s.myco.colorize = on;
+    } else if (id == "fireflies") {
+        if (index == 0) s.fireflies.stars = on ? 1.0f : 0.0f;
     }
 }
 
@@ -433,6 +465,8 @@ uint32_t knobColor(const AppSettings& s, const std::string& id, int index) {
     if (id == "lava") return index == 0 ? s.lava.lavaColor : s.lava.liquidColor;
     if (id == "ape") return s.ape.color;
     if (id == "myco") return s.myco.color;
+    if (id == "fireflies") return s.fireflies.color;
+    if (id == "snow") return s.snow.color;
     return 0xFFFFFF;
 }
 
@@ -452,6 +486,10 @@ void setKnobColor(AppSettings& s, const std::string& id, int index, uint32_t rgb
         s.ape.color = rgb;
     } else if (id == "myco") {
         s.myco.color = rgb;
+    } else if (id == "fireflies") {
+        s.fireflies.color = rgb;
+    } else if (id == "snow") {
+        s.snow.color = rgb;
     }
 }
 
@@ -510,6 +548,7 @@ std::wstring knobReadout(const AppSettings& s, const std::string& id, int index)
 int presetCount(const std::string& id) {
     if (id == "matrix") return 5;
     if (id == "starfield" || id == "aurora" || id == "lava" || id == "ape" || id == "myco") return 4;
+    if (id == "fireflies" || id == "snow") return 3;
     return 0;
 }
 
@@ -532,6 +571,12 @@ const char* presetName(const std::string& id, int index) {
     } else if (id == "myco") {
         static const char* n[] = {"Classic", "Mono", "Slow bloom", "Night"};
         if (index >= 0 && index < 4) return n[index];
+    } else if (id == "fireflies") {
+        static const char* n[] = {"Summer dusk", "Deep woods", "Meadow"};
+        if (index >= 0 && index < 3) return n[index];
+    } else if (id == "snow") {
+        static const char* n[] = {"Night sky", "Pine forest", "Window"};
+        if (index >= 0 && index < 3) return n[index];
     }
     return "Preset";
 }
@@ -570,6 +615,14 @@ void resetEffect(AppSettings& s, const std::string& id) {
         s.myco = MycoSettings{};
         s.myco.imagePath = path;
         s.myco.look.parallax = para;
+    } else if (id == "fireflies") {
+        const bool para = s.fireflies.look.parallax;
+        s.fireflies = FireflySettings{};
+        s.fireflies.look.parallax = para;
+    } else if (id == "snow") {
+        const bool para = s.snow.look.parallax;
+        s.snow = SnowSettings{};
+        s.snow.look.parallax = para;
     }
 }
 
@@ -739,6 +792,44 @@ void applyPreset(AppSettings& s, const std::string& id, int index) {
             m.colorize = true;
             m.speed = 0.7f;
             lookPreset(m.look, 0.7f, 0.9f, 0.38f, true, false, 30);
+        }
+    } else if (id == "fireflies") {
+        auto& m = s.fireflies;
+        if (index == 1) {
+            m.color = 0xB6E86A;
+            m.speed = 0.22f;
+            m.density = 0.72f;
+            m.mist = 0.82f;
+            m.stars = 0.0f;
+            m.woods = 0.95f;
+            m.style = 1;
+            lookPreset(m.look, 0.95f, 0.95f, 0.38f, false, false, 30);
+        } else if (index == 2) {
+            m.color = 0xE8FF8A;
+            m.speed = 0.38f;
+            m.density = 1.45f;
+            m.mist = 0.32f;
+            m.stars = 0.9f;
+            m.woods = 0.12f;
+            m.style = 2;
+            lookPreset(m.look, 1.05f, 1.15f, 0.20f, false, true, 30);
+        }
+    } else if (id == "snow") {
+        auto& m = s.snow;
+        if (index == 1) {
+            m.color = 0xF4F7FF;
+            m.speed = 0.48f;
+            m.density = 1.15f;
+            m.wind = 0.38f;
+            m.backdrop = 1;
+            lookPreset(m.look, 1.0f, 0.9f, 0.30f, false, false, 30);
+        } else if (index == 2) {
+            m.color = 0xFFF4E4;
+            m.speed = 0.28f;
+            m.density = 0.75f;
+            m.wind = 0.10f;
+            m.backdrop = 2;
+            lookPreset(m.look, 1.0f, 1.05f, 0.30f, false, false, 30);
         }
     }
 }

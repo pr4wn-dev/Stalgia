@@ -1073,8 +1073,9 @@ bool Renderer::ensureSceneReadback() {
     return true;
 }
 
-float Renderer::sampleSceneLuma(int* litPixels) {
+float Renderer::sampleSceneLuma(int* litPixels, int* sampleCount) {
     if (litPixels) *litPixels = 0;
+    if (sampleCount) *sampleCount = 0;
     if (!ensureSceneReadback()) return 0.0f;
     D3D11_MAPPED_SUBRESOURCE map{};
     if (FAILED(m_context->Map(m_lumaStage.get(), 0, D3D11_MAP_READ, 0, &map))) return 0.0f;
@@ -1095,6 +1096,7 @@ float Renderer::sampleSceneLuma(int* litPixels) {
     }
     m_context->Unmap(m_lumaStage.get(), 0);
     if (litPixels) *litPixels = lit;
+    if (sampleCount) *sampleCount = m_sceneW * m_sceneH;
     return best;
 }
 

@@ -54,15 +54,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cat > release-notes.md <<EOF
-          Stalgia is a lightweight animated desktop wallpaper for Windows 10 and 11. One portable 64-bit executable draws behind the desktop icons with Direct3D 11.
+          Lightweight animated desktop wallpapers and a desktop widget for Windows 10 and 11, drawn behind your icons by one portable Direct3D 11 executable.
 
           Highlights:
-          - Matrix, Code Ape, and Slow Myco
-          - Stars, Aurora, and Lava
+          - Fireflies: Summer dusk, Deep woods, and Meadow
+          - Snowfall: Night sky, Pine forest, and Window
+          - Matrix, Stars, Aurora, and Lava
           - Desktop widget with a live preview, wallpaper picker, and system strip
           - Gallery, tray icon, and control panel
 
+          Self-test fixes for the gallery and the widget, including the Window preset's coverage check.
+
           The executable is unsigned for now, so Windows SmartScreen and Smart App Control may block it. Code signing via SignPath is planned.
+
+          Free code signing provided by SignPath.io, certificate by SignPath Foundation. Signing is being set up; this build is still unsigned.
           EOF
           gh release create "${GITHUB_REF_NAME}" "${{ steps.stage.outputs.file }}" \
             --title "Stalgia ${{ steps.stage.outputs.version }}" \

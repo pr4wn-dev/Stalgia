@@ -5,8 +5,8 @@
     "starfield": 2,
     "aurora": 2,
     "lava": 2,
-    "ape": 3,
-    "myco": 3
+    "fireflies": 2,
+    "snow": 2
   },
   "fps": 30,
   "effect": "matrix",
@@ -48,27 +48,19 @@
     "glow": 1.4,
     "blobSize": 1.15
   },
-  "ape": {
-    "color": "#F2F6FF",
-    "bgDim": 1.00,
-    "apeBrightness": 1.70,
-    "size": 0.85,
-    "posX": 0.50,
-    "speed": 1.0,
-    "glyphSize": 9,
-    "eyeGlow": false,
-    "breathing": true
+  "fireflies": {
+    "color": "#D2F26A",
+    "speed": 0.32,
+    "density": 1.0,
+    "mist": 0.55,
+    "stars": 0.35,
+    "woods": 0.45
   },
-  "myco": {
-    "color": "#F2F6FF",
-    "bgDim": 1.00,
-    "brightness": 1.70,
-    "size": 0.85,
-    "posX": 0.50,
-    "speed": 1.0,
-    "glyphSize": 7,
-    "eyeGlow": false,
-    "breathing": true,
-    "colorize": true
+  "snow": {
+    "color": "#F7F8FF",
+    "speed": 0.40,
+    "density": 1.0,
+    "wind": 0.22,
+    "backdrop": 0
   }
 }

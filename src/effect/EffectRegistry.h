@@ -16,6 +16,8 @@ struct EffectInfo {
 
 class EffectRegistry {
 public:
+    using Factory = std::function<std::unique_ptr<IEffect>()>;
+
     EffectRegistry();
 
     std::vector<EffectInfo> list() const;
@@ -24,9 +26,11 @@ public:
     std::unique_ptr<IEffect> create(const std::string& id) const;
     bool contains(const std::string& id) const;
 
-private:
-    using Factory = std::function<std::unique_ptr<IEffect>()>;
+    // Used by sources compiled from STALGIA_PRIVATE_EFFECTS_DIR.
+    void addExternal(const char* id, const char* displayName, const char* group, const char* description,
+                     Factory factory);
 
+private:
     void add(const char* id, const char* displayName, const char* group, const char* description,
              Factory factory);
 

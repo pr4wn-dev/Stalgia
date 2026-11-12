@@ -177,7 +177,7 @@ float RainReveal::sampleLumaAt(float x, float y) const {
 
 float RainReveal::sampleLuma(float x, float y) const {
     const float c = sampleLumaAt(x, y);
-    // Palette characters (Slow Myco): let thin dark seams win the glyph
+    // Palette characters: let thin dark seams win the glyph
     // cell so plates/face lines survive 9px rain, otherwise keep rims.
     if (!m_active.rgb || m_cell < 1.0f) return c;
     const float h = m_cell * 0.32f;
