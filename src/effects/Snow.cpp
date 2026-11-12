@@ -69,6 +69,9 @@ void Snow::render(const FrameContext& ctx) {
     cb.p0 = m_cfg.wind;
     cb.p1 = (float)m_cfg.backdrop;
     cb.p3 = m_mask ? -1.0f : 0.0f;
+    const wchar_t* plate = m_cfg.backdrop == 1 ? L"pine-forest" : (m_cfg.backdrop == 2 ? L"window" : L"night-sky");
+    ctx.renderer->bindPlates(L"snow", plate);
+    cb.padA = ctx.renderer->plateMask();
     cb.lookX = ctx.lookX;
     cb.lookY = ctx.lookY;
     cb.quality = ctx.renderer->isWarp() ? 0.0f : 1.0f;

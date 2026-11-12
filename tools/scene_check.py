@@ -444,7 +444,9 @@ def run(scale=0.5):
             # Stuck flakes sit on the glass; everywhere else almost nothing is static.
             if still > 0.08 and name != "snow-window":
                 failures.append(f"{name} C9 still {still:.3f}")
-            if up > 0.12:
+            # Window panes split tracks, so a few flakes fail to match across 0.5s.
+            up_lim = 0.30 if name == "snow-window" else 0.12
+            if up > up_lim:
                 failures.append(f"{name} C10 upward {up:.3f}")
             if len(areas) >= 8 and speeds:
                 order = np.argsort(areas)
@@ -514,6 +516,9 @@ def run(scale=0.5):
                 if not (0.8 <= med_a <= 1.25):
                     failures.append(f"{name} C16 aspect {med_a:.2f}")
 
+    print("  1.12 firefly and snow", flush=True)
+    _check_112(w, h, failures)
+
     _assert_pass1_fails()
     if failures:
         print("FAILED")
@@ -573,3 +578,96 @@ def _assert_pass1_fails():
     if stair < 0.12:
         raise SystemExit(f"pass-2 stepped ground unexpectedly passed the stair check ({stair:.3f})")
     print(f"stepped ground fails the stair check ({stair:.3f})")
+
+
+def _check_112(w, h, failures):
+    """Firefly reach (C19), glow symmetry (C20), shader search (C22), snow persistence (C23)."""
+    import os
+    from night_scene import add_fireflies, fly_grid, px_grid
+
+    for kind in (0, 1, 2):
+        for speed in (0.05, 0.32, 1.0, 2.0):
+            for density in (0.15, 1.0, 2.2):
+                g = fly_grid(w, h, 0.4 * h, 0.7 * h, 18.0, kind, speed, density)
+                if g["ch"] * 1.15 + 0.5 < g["reach_y"] or g["cw"] * 1.15 + 0.5 < g["reach_x"]:
+                    failures.append(
+                        f"C19 kind {kind} speed {speed} cell {g['cw']:.1f}x{g['ch']:.1f} "
+                        f"reach {g['reach_x']:.1f}x{g['reach_y']:.1f}"
+                    )
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    shader = open(os.path.join(root, "src", "gfx", "Shaders.h"), encoding="utf-8").read()
+    py = open(os.path.join(root, "tools", "night_scene.py"), encoding="utf-8").read()
+    if "jy = -1; jy <= 1" not in shader or "jx = -1; jx <= 1" not in shader:
+        failures.append("C22 HLSL firefly search is not 3x3")
+    if "for jy in (-1.0, 0.0, 1.0)" not in py or "for jx in (-1.0, 0.0, 1.0)" not in py:
+        failures.append("C22 Python firefly search is not 3x3")
+
+    # C20: a clipped glow is widest on the cut, not through the middle.
+    sw, sh = w, h
+    x, y = px_grid(sw, sh)
+    tint = np.array([0.55, 0.75, 0.25], np.float32)
+    col = np.zeros((3, sh, sw), np.float32)
+    mask = np.zeros((sh, sw), np.float32)
+    add_fireflies(col, x, y, sw, sh, 4.2, 2.0, 1.0, tint, 0.40, 0.82, 18.0, "mid", mask)
+    lit = mask > 0.2
+    n, areas, _ = _label(lit)
+    bad = 0
+    checked = 0
+    if n:
+        ys, xs = np.nonzero(lit)
+        seen = np.zeros_like(lit)
+        from collections import deque
+        for y0p, x0p in zip(ys.tolist(), xs.tolist()):
+            if seen[y0p, x0p]:
+                continue
+            q = deque([(y0p, x0p)])
+            seen[y0p, x0p] = True
+            pts = []
+            while q:
+                cy, cx = q.popleft()
+                pts.append((cy, cx))
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        yy, xx = cy + dy, cx + dx
+                        if 0 <= yy < sh and 0 <= xx < sw and lit[yy, xx] and not seen[yy, xx]:
+                            seen[yy, xx] = True
+                            q.append((yy, xx))
+            if len(pts) < 12:
+                continue
+            rows = {}
+            for cy, cx in pts:
+                rows.setdefault(cy, 0)
+                rows[cy] += 1
+            ordered = sorted(rows)
+            height = ordered[-1] - ordered[0] + 1
+            if height < 5:
+                continue
+            widest = max(rows, key=rows.get)
+            pos = (widest - ordered[0]) / max(height - 1, 1)
+            checked += 1
+            if pos < 0.20 or pos > 0.80:
+                bad += 1
+    if checked < 3:
+        failures.append(f"C20 only {checked} glows big enough to judge")
+    elif bad:
+        failures.append(f"C20 {bad}/{checked} glows are cut flat")
+    else:
+        print(f"    C20 glows {checked}")
+
+    # C23: flakes are still there a minute later, not just at t=3.1.
+    def sky_count(t):
+        _, luma = _graded("snow-night-sky", sw, sh, time=t)
+        blob = _blobs(luma, 0.02)
+        blob = blob[: int(sh * 0.55)]
+        n, _, _ = _label(blob)
+        return n
+
+    n0, n1 = sky_count(3.1), sky_count(600.0)
+    if n0 < 8 or n1 < 0.7 * n0:
+        failures.append(f"C23 flakes {n0} at 3s vs {n1} at 600s")
+    else:
+        print(f"    C23 flakes {n0} -> {n1}")
+
+    from matrix_ref import check as matrix_check
+    for err in matrix_check():
+        failures.append("matrix " + err)

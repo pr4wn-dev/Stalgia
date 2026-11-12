@@ -204,80 +204,112 @@ def mist_band(x, y, h, g, time, alpha, color, speed_px):
     return a, color
 
 
-def blink_env(time, phase, double, speed):
-    """Smooth on/off. Periodic over 3600s (450 cycles of 8s)."""
-    tempo = float(lerp(0.7, 1.3, np.clip(speed / 2.0, 0.0, 1.0)))
-    cyc = frac(time / 8.0 * tempo + phase)
-    on = 0.55
-    attack = smoothstep(0.0, 0.05, cyc) * smoothstep(on + 0.10, on, cyc)
-    a = smoothstep(0.02, 0.06, cyc) * smoothstep(0.10, 0.06, cyc)
-    b = smoothstep(0.14, 0.18, cyc) * smoothstep(0.24, 0.18, cyc)
-    dbl = np.clip(a + b, 0.0, 1.0)
-    return np.where(double, dbl, attack)
+def blink_env(time, phase, pattern):
+    """Three blinks. Periods divide 3600s. pattern is 0..1 per fly."""
+    period = np.where(pattern < 0.55, 6.0, np.where(pattern < 0.80, 5.0, 8.0))
+    u = frac(time / 3600.0 * (3600.0 / period) + phase)
+    slow = smoothstep(0.0, 0.03, u) * (1.0 - smoothstep(0.42, 0.55, u))
+    a = smoothstep(0.04, 0.07, u) * (1.0 - smoothstep(0.14, 0.18, u))
+    b = smoothstep(0.24, 0.27, u) * (1.0 - smoothstep(0.34, 0.40, u))
+    double = np.clip(a + b, 0.0, 1.0)
+    stroke = smoothstep(0.0, 0.025, u) * (1.0 - smoothstep(0.28, 0.40, u))
+    return np.where(pattern < 0.55, slow, np.where(pattern < 0.80, double, stroke))
 
 
-def add_fireflies(col, x, y, w, h, time, speed, density, tint, band_lo, band_hi, count, kind, mask_a):
-    """kind: 'far', 'mid', 'near'. Returns updated mask_a."""
+def fly_grid(w, h, y0, y1, count, kind, speed, density):
+    """Cell layout shared by the renderer and the C19 reach check. kind is 0/1/2."""
     s = h / float(H0)
-    # Scale with height, not area, so a 960-wide still still reads as a field of flies.
-    # Count tracks area so the 1080p budget still fits the scaled component window.
-    n = max(1, int(round(count * density * (h / float(H0)))))
-    cols = max(1, int(round(np.sqrt(n * (w / max(h, 1))))))
-    rows = max(1, int(np.ceil(n / cols)))
+    sp_k = speed / 0.32
+    amp_k = float(np.clip(sp_k, 0.25, 1.5))
+    k_mul = max(1.0, round(sp_k / 1.5))
+    n = max(count * max(density, 0.05) * s, 1.0)
+    base_ax = 10.0 if kind == 0 else 20.0 if kind == 1 else 36.0
+    base_ay = 7.0 if kind == 0 else 14.0 if kind == 1 else 16.0
+    ax = base_ax * s * amp_k
+    ay = base_ay * s * amp_k
+    b_max = (6.0 if kind == 0 else 10.0 if kind == 1 else 22.0) * s
+    reach_y = 3.0 * b_max + ay + 6.0 * s + 1.0
+    reach_x = 3.0 * b_max + ax + 1.0
+    band_h = max(y1 - y0, 8.0)
+    cols = n if kind == 2 else max(1.0, (n * w / max(h, 1.0)) ** 0.5)
+    rows = 1.0 if kind == 2 else max(1.0, float(np.ceil(n / max(cols, 1.0))))
+    rows = min(rows, max(1.0, float(np.floor(band_h * 1.15 / max(reach_y, 1.0)))))
+    cols = max(cols, float(np.ceil(n / max(rows * 0.85, 1.0))))
+    cols = min(cols, max(1.0, float(np.floor(w * 1.15 / max(reach_x, 1.0)))))
+    return dict(n=n, cols=cols, rows=rows, cw=w / max(cols, 1.0), ch=band_h / max(rows, 1.0),
+                ax=ax, ay=ay, reach_x=reach_x, reach_y=reach_y, k_mul=k_mul, b_max=b_max, s=s)
+
+
+def add_fireflies(col, x, y, w, h, time, speed, density, tint, band_lo, band_hi, count, kind, mask_a, halo_scale=1.0):
+    """kind: 'far', 'mid', 'near'. A 3x3 search so the glow is not cut on the cell edge."""
+    kind_i = 0 if kind == "far" else 1 if kind == "mid" else 2
     y0 = band_lo * h
     y1 = band_hi * h
-    cw = w / cols
-    ch = max(y1 - y0, 8.0) / rows
-    # 2x2 neighborhood so a fly can cross a cell without clipping.
-    for jy in (0.0, 1.0):
-        for jx in (0.0, 1.0):
-            ix = np.floor(x / cw) - jx
-            iy = np.floor((y - y0) / ch) - jy
+    g = fly_grid(w, h, y0, y1, count, kind_i, speed, density)
+    s, cw, ch = g["s"], g["cw"], g["ch"]
+    y_lo = max(0, int(np.floor(y0 - g["reach_y"])) - 1)
+    y_hi = min(h, int(np.ceil(y1 + g["reach_y"])) + 1)
+    if y_hi <= y_lo:
+        return mask_a
+    sl = (slice(y_lo, y_hi), slice(None))
+    xx, yy = x[sl], y[sl]
+    cell_x = np.floor(xx / cw)
+    cell_y = np.floor((yy - y0) / ch)
+    white = lin_hex(0xFFF6C8)
+    occ = min(0.92, g["n"] / max(g["cols"] * g["rows"], 1.0))
+    for jy in (-1.0, 0.0, 1.0):
+        for jx in (-1.0, 0.0, 1.0):
+            ix = cell_x + jx
+            iy = cell_y + jy
             hs = hash12(ix, iy + 3.1)
-            alive = hs > (1.0 - min(0.92, n / max(cols * rows, 1)))
+            alive = hs > (1.0 - occ)
             jx2, jy2 = hash22(ix + 2.0, iy + 1.0)
             cx = (ix + 0.15 + 0.7 * jx2) * cw
             cy = y0 + (iy + 0.15 + 0.7 * jy2) * ch
-            phase = hs
-            k1 = 180.0 + np.floor(hs * 200.0)  # integer cycles / 3600s
-            k2 = 260.0 + np.floor(hash12(ix, iy + 9.0) * 180.0)
+            k1 = (180.0 + np.floor(hs * 200.0)) * g["k_mul"]
+            k2 = (260.0 + np.floor(hash12(ix, iy + 9.0) * 180.0)) * g["k_mul"]
             ang = 6.2831853 * time / 3600.0
-            amp_x = (20.0 if kind == "mid" else 10.0 if kind == "far" else 16.0) * s
-            amp_y = (14.0 if kind == "mid" else 7.0 if kind == "far" else 10.0) * s
-            cx = cx + amp_x * np.sin(ang * k1 + phase * 6.0) * (speed / 0.32)
-            cy = cy + amp_y * np.sin(ang * k2 + phase * 4.0) * (speed / 0.32)
-            env = blink_env(time, phase, hash12(ix, iy + 4.0) > 0.875, speed)
-            # rise a little while lit
-            cy = cy - 6.0 * s * env
-            dx = x - cx
-            dy = y - cy
-            dist = np.sqrt(dx * dx + dy * dy)
-            # Near flies are small cores with a soft falloff. A flat defocus
-            # disc reads as a coin sitting on the ground.
-            if kind == "far":
-                core_r = lerp(0.8, 1.2, hs) * s
-                bloom = lerp(4.0, 6.0, hs) * s
-                peak, gain = 1.2, 0.35
-            elif kind == "near":
-                core_r = lerp(1.1, 1.8, hs) * s
-                bloom = lerp(5.0, 8.0, hs) * s
-                peak, gain = 1.15, 0.22
+            pattern = hash12(ix, iy + 4.0)
+            env = blink_env(time, hs, pattern)
+            cx = cx + g["ax"] * np.sin(ang * k1 + hs * 6.0)
+            cy = cy + g["ay"] * np.sin(ang * k2 + hs * 4.0)
+            cy = cy - np.where(pattern > 0.80, 14.0, 6.0) * s * env
+            dist = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+            if kind_i == 2:
+                rad = lerp(11.0, 20.0, hs) * s
+                edge = 3.5 * s
+                disc = smoothstep(rad + edge, np.maximum(rad - edge, 0.0), dist)
+                rim = smoothstep(rad, rad - 2.2 * s, dist) * smoothstep(rad - 5.5 * s, rad - 2.2 * s, dist)
+                shade = (disc * 0.20 + rim * 0.07) * env
+                level = 1.0
+                glow = tint * 0.8
             else:
-                core_r = lerp(1.3, 2.0, hs) * s
-                bloom = lerp(7.0, 10.0, hs) * s
-                peak, gain = 2.0, 0.55
-            core = np.exp(-(dist * dist) / np.maximum(core_r * core_r, 0.2))
-            halo = np.exp(-(dist * dist) / np.maximum(bloom * bloom, 0.4))
-            shade = (core * peak + halo * gain) * env
-            white = lin_hex(0xFFFBE0)
-            shade = np.where(alive & (cy > y0 - 8) & (cy < y1 + 8), shade, 0.0)
+                core_r = (lerp(0.7, 1.05, hs) if kind_i == 0 else lerp(1.2, 1.9, hs)) * s
+                bloom = (lerp(4.0, 6.0, hs) if kind_i == 0 else lerp(7.0, 10.0, hs)) * s
+                r0 = (2.6 if kind_i == 0 else 3.6) * s
+                if halo_scale > 1.0:
+                    bloom *= 1.5
+                    r0 *= 1.35
+                core = np.exp(-(dist * dist) / np.maximum(core_r * core_r, 0.2))
+                halo = np.power(1.0 / (1.0 + (dist / r0) ** 2), 1.5)
+                window = np.exp(-(dist * dist) / np.maximum(bloom * bloom, 0.4))
+                peak, gain = (1.05, 0.28) if kind_i == 0 else (1.7, 0.42)
+                if halo_scale > 1.0:
+                    gain *= 2.2
+                shade = (core * peak + halo * window * gain) * env
+                level = 0.45
+                glow = tint
+            pad = max(8.0 * s, 2.0)
+            edge_fade = smoothstep(y0 - pad - 12.0 * s, y0 - pad, cy) * (
+                1.0 - smoothstep(y1 + pad, y1 + pad + 12.0 * s, cy)
+            )
+            shade = np.where(alive, shade * edge_fade, 0.0)
             env_s = np.where(alive, env, 0.0)
-            sat = 0.72 if kind == "near" else 1.0
             for c in range(3):
-                base = (tint[c] * sat + (white[c] - tint[c] * sat) * 0.6 * env_s)
-                col[c] += base * shade
+                base = glow[c] + (white[c] - glow[c]) * 0.62 * env_s
+                col[c][sl] += base * shade
             mark = (shade > 0.05).astype(np.float32)
-            mask_a = np.maximum(mask_a, mark * 0.45)
+            mask_a[sl] = np.maximum(mask_a[sl], mark * level)
     return mask_a
 
 
@@ -304,11 +336,13 @@ def snow_layer(col, x, y, w, h, time, speed, wind, density, spec, tint, mask=Non
     shift_y = fall_q * time
     shift_x = wind_q * time
     ix0 = np.floor((x - shift_x) / cell_x)
-    iy0 = np.floor((y - shift_y) / cell_y)
     covered = np.zeros(x.shape, dtype=bool)
     for jx in (-1.0, 0.0, 1.0):
         cid_x = ix0 + jx
-        cid_y = iy0
+        jit = 1.0 + 0.2 * (hash12(cid_x, np.full_like(cid_x, spec["seed"] + 3.0)) - 0.5)
+        fall_c = np.round(fall_q * jit / max(quantum_y, 1e-8)) * quantum_y
+        shift_c = fall_c * time
+        cid_y = np.floor((y - shift_c) / cell_y)
         hs = hash12(cid_x + 2.0, cid_y + spec["seed"])
         # Occupancy is defined at 1080p. Scale it with height so a half-res
         # check still lands in the H^2 component window.
@@ -321,8 +355,7 @@ def snow_layer(col, x, y, w, h, time, speed, wind, density, spec, tint, mask=Non
         jx2, jy2 = hash22(cid_x + spec["seed"], cid_y + 0.4)
         cx = (cid_x + 0.5 + (jx2 - 0.5) * 0.3) * cell_x + shift_x
         # per-column fall jitter, quantized
-        jitter = 1.0 + 0.2 * (hash12(cid_x, np.full_like(cid_x, spec["seed"] + 3.0)) - 0.5)
-        cy = (cid_y + 0.5 + (jy2 - 0.5) * 0.25) * cell_y + shift_y * jitter
+        cy = (cid_y + 0.5 + (jy2 - 0.5) * 0.25) * cell_y + shift_c
         freq = spec["freq"]
         cycles = max(1.0, np.round(freq * 3600.0))
         sway = spec["sway"] * s * np.sin(6.2831853 * time / 3600.0 * cycles + hs * 6.2)
@@ -336,7 +369,9 @@ def snow_layer(col, x, y, w, h, time, speed, wind, density, spec, tint, mask=Non
         alpha = lerp(spec["a0"], spec["a1"], hash12(cid_x, cid_y + 8.0))
         vary = lerp(0.92, 1.0, hs)
         shade_col = tint[:, None, None] * vary
-        a = smoothstep(rad + blur, np.maximum(rad - blur, 0.0), dist) * alpha
+        edge = smoothstep(rad + blur, np.maximum(rad - blur, 0.0), dist)
+        core = np.exp(-(dist * dist) / np.maximum(rad * rad * 0.28, 0.2))
+        a = edge * alpha * lerp(0.62, 1.0, core)
         a = np.where(alive, np.clip(a, 0.0, 1.0), 0.0)
         if mask is not None:
             a = np.where(mask, a, 0.0)
@@ -387,12 +422,12 @@ LAYERS = {
                  far_c=0x1C2A2E, mid_c=0x0F181B, near_c=0x10161A,
                  sky=[(0.0, 0x152838), (0.45, 0x243E48), (0.72, 0x2E4A52)],
                  horizon=0x1E3138, mist=0x4A6A6A, mist_a=(0.28, 0.18),
-                 flies=(10, 12, 2), stars=0, glow=0xB6E86A),
+                 flies=(18, 20, 4), stars=0, glow=0xB6E86A),
     "meadow": dict(far=(0.68, 0.05, 0.12, 90.0, (7, 11)), mid=None,
                    near=(0.90, 0.06, 0.12, 260.0, (6, 9)),
                    far_c=0x5A546C, mid_c=0x243028, near_c=0x121614,
                    sky=[(0.0, 0x0A1236), (0.40, 0x2B2C5E), (0.62, 0x8A4030), (0.75, 0xC46A40)],
-                   horizon=0xF2A766, mist=0x8A8FA0, mist_a=(0.12, 0.0),
+                   horizon=0xC48462, mist=0x8A8FA0, mist_a=(0.12, 0.0),
                    flies=(22, 22, 2), stars=170, glow=0xE8FF8A),
 }
 
@@ -484,7 +519,7 @@ def render_fireflies(w, h, style, time, density, speed, mist_k, stars_on, glow, 
     if stars_on and p["stars"] and flies:
         _stars(col, x, y, w, h, p["stars"], 0.42 if style == "meadow" else 0.50)
     # Exposure so the graded still sits in the art-direction luma window.
-    col *= 2.6 if style == "deep" else (2.05 if style == "summer" else 1.9)
+    col *= 2.6 if style == "deep" else (2.20 if style == "summer" else 1.9)
     if mask:
         out = np.stack([masks[0], masks[1], masks[2], mask_a], axis=0)
         return out
@@ -516,7 +551,7 @@ SNOW_SPECS = [
     dict(cellx=96, celly=84, d0=3.2, d1=5.2, blur=0.9, a0=0.62, a1=0.82, fall=64.0,
          sway=12.0, freq=0.50, stretch=1.0, count=340, seed=2.0),
     dict(cellx=180, celly=160, d0=6.0, d1=9.0, blur=1.3, a0=0.75, a1=0.90, fall=112.0,
-         sway=22.0, freq=0.35, stretch=1.15, count=80, seed=3.0),
+         sway=22.0, freq=0.35, stretch=1.28, count=80, seed=3.0),
     dict(cellx=520, celly=480, d0=18.0, d1=30.0, blur=4.0, a0=0.10, a1=0.18, fall=200.0,
          sway=36.0, freq=0.25, stretch=1.25, count=5, seed=4.0),
 ]
@@ -539,6 +574,11 @@ def render_snow(w, h, backdrop, time, density, speed, wind, flake, look, mask=Fa
         glow = lin_hex(0x9DB4D6)
         for c in range(3):
             col[c] = lerp(col[c], glow[c], moon * 0.22)
+        moon_r = 17.0 * s
+        disc = smoothstep(moon_r + 1.6 * s, moon_r - 1.2 * s, np.sqrt((x - mx) ** 2 + (y - my) ** 2))
+        moon_c = lin_hex(0xD7DCEB)
+        for c in range(3):
+            col[c] = lerp(col[c], moon_c[c], disc * 0.72)
         # Soft hills and a few faint pines. The snow field covers the tree fill
         # so there is no dark band under the tips.
         g = soil_y(x, h, 0.80, 22.0, 480.0, 4.0)
@@ -787,10 +827,11 @@ def _frost(x, y, x0, y0, pane_w, pane_h, mul, glass, s):
     corner_hi = smoothstep(0.26, 0.02, upper) * 0.30
     bottom = smoothstep(0.30, 0.0, (pane_h - oy) / np.maximum(pane_h, 1.0))
     frost = corner_lo * lerp(0.25, 1.0, amt) + corner_hi * amt + bottom * lerp(0.04, 0.42, amt)
-    n = 0.62 * vnoise(x / max(16.0 * s, 1.0), y / max(16.0 * s, 1.0))
-    n = n + 0.38 * vnoise(x / max(8.0 * s, 1.0) + 1.7, y / max(8.0 * s, 1.0) + 0.6)
-    ridge = 1.0 - np.abs(2.0 * n - 1.0)
-    frost = frost * np.power(np.clip(ridge, 0.0, 1.0), 1.25) * lerp(0.15, 1.0, amt)
+    fern_u = (ox * 0.20 + oy) / max(18.0 * s, 1.0)
+    fern_v = (np.minimum(ox, pane_w - ox) - np.minimum(oy, pane_h - oy)) / max(7.0 * s, 1.0)
+    fern = vnoise(fern_u, fern_v + px)
+    ridge = 1.0 - np.abs(2.0 * fern - 1.0)
+    frost = frost * np.power(np.clip(ridge, 0.0, 1.0), 1.15) * lerp(0.20, 1.0, amt)
     return np.where(glass, np.clip(frost, 0.0, 1.0), 0.0)
 
 

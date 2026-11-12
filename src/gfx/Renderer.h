@@ -70,6 +70,53 @@ public:
     ID3D11PixelShader* fallbackShader() const { return m_fallbackPs.get(); }
     void drawFullscreen(ID3D11PixelShader* ps, const FullscreenCB& cb);
     void drawFullscreen(ID3D11PixelShader* ps, const void* data, UINT bytes);
+    // Photoreal backdrop for this effect and preset. padA of the fullscreen
+    // constants is the layer mask (0 when no plates are on disk).
+    void bindPlates(const wchar_t* effect, const wchar_t* preset);
+    float plateMask() const { return m_plateMask; }
+    // 0 while a plate is fading in over the procedural frame, then 1.
+    void advancePlateFade(float dt);
+    float plateFade() const { return m_plateFade; }
+    // Draws one sky shader as soon as its bytecode is ready, so the driver's
+    // first-use compile does not land on a preset change.
+    bool skyShaderWarmed(const char* effectId) const;
+    void pumpSkyWarmup();
+    // Thumbnails bind their own plates through the same slots. Capture and
+    // restore so a thumb cannot leave the wallpaper sampling another preset.
+    struct PlateBinding {
+        ID3D11ShaderResourceView* layer[4] = {};
+        std::wstring key;
+        ID3D11Device* device = nullptr;
+        float mask = 0.0f;
+        float fade = 1.0f;
+        std::wstring pendingKey;
+        void release();
+        ~PlateBinding() { release(); }
+        PlateBinding() = default;
+        PlateBinding(const PlateBinding&) = delete;
+        PlateBinding& operator=(const PlateBinding&) = delete;
+        PlateBinding(PlateBinding&& other) noexcept { *this = std::move(other); }
+        PlateBinding& operator=(PlateBinding&& other) noexcept {
+            if (this != &other) {
+                release();
+                for (int i = 0; i < 4; ++i) {
+                    layer[i] = other.layer[i];
+                    other.layer[i] = nullptr;
+                }
+                key = std::move(other.key);
+                device = other.device;
+                other.device = nullptr;
+                mask = other.mask;
+                other.mask = 0.0f;
+                fade = other.fade;
+                other.fade = 1.0f;
+                pendingKey = std::move(other.pendingKey);
+            }
+            return *this;
+        }
+    };
+    PlateBinding capturePlates() const;
+    void restorePlates(PlateBinding& saved);
     void setViewport(int x, int y, int w, int h);
     bool isWarp() const { return m_warp; }
     void beginGpuTime();
@@ -80,6 +127,20 @@ public:
     // sampleCount is the number of scene-target pixels actually read, which is
     // the denominator for coverage. It is not the swapchain size.
     float sampleSceneLuma(int* litPixels = nullptr, int* sampleCount = nullptr);
+    // One readback. grid, when set, receives the mean linear luma of each cell.
+    struct SceneSample {
+        float maxLuma = 0.0f;
+        float meanLuma = 0.0f;
+        float skyMean = 0.0f;
+        int lit = 0;
+        int sampled = 0;
+        int bright = 0;
+        double bandR = 0.0;
+        double bandG = 0.0;
+        double bandB = 0.0;
+        int bandN = 0;
+    };
+    bool sampleScene(SceneSample& out, std::vector<float>* grid = nullptr, int gridW = 0, int gridH = 0);
     // Largest step, as a fraction of the band peak, where the Milky Way feather falls
     // toward the sky. A hard diagonal cutoff is well above a smooth gaussian.
     float sampleBandEdge();
@@ -153,6 +214,18 @@ private:
     ComPtr<ID3D11Texture2D> m_noiseTex;
     ComPtr<ID3D11ShaderResourceView> m_noiseSrv;
     ComPtr<ID3D11SamplerState> m_noiseSamp;
+    ComPtr<ID3D11ShaderResourceView> m_plateSrv[4];
+    std::wstring m_plateKey;
+    std::wstring m_platePendingKey;
+    ID3D11Device* m_plateDevice = nullptr;
+    float m_plateMask = 0.0f;
+    float m_plateFade = 1.0f;
+    ComPtr<ID3D11BlendState> m_plateFadeBlend;
+    ID3D11BlendState* m_blendOverride = nullptr;
+    float m_blendFactor = 1.0f;
+    bool m_skyWarmed[4] = {};
+    ComPtr<ID3D11Texture2D> m_warmTex;
+    ComPtr<ID3D11RenderTargetView> m_warmRtv;
     ComPtr<ID3D11Texture2D> m_lumaStage;
     ComPtr<ID3D11Texture2D> m_captureStage;
     struct GpuSlot {

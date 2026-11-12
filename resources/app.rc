@@ -4,11 +4,28 @@
 IDI_APPICON ICON "app.ico"
 IDR_APPLOGO RCDATA "stalgia-256.png"
 
+IDR_PLATE_FIREFLIES_A RCDATA "plates/fireflies/layer-a-sky.webp"
+IDR_PLATE_FIREFLIES_B RCDATA "plates/fireflies/layer-b-mountains.webp"
+IDR_PLATE_FIREFLIES_C RCDATA "plates/fireflies/layer-c-mid.webp"
+IDR_PLATE_FIREFLIES_D RCDATA "plates/fireflies/layer-d-foreground.webp"
+IDR_PLATE_SNOW_A RCDATA "plates/snow/layer-a-sky.webp"
+IDR_PLATE_SNOW_B RCDATA "plates/snow/layer-b-mountains.webp"
+IDR_PLATE_SNOW_C RCDATA "plates/snow/layer-c-mid.webp"
+IDR_PLATE_SNOW_D RCDATA "plates/snow/layer-d-foreground.webp"
+IDR_PLATE_STARS_A RCDATA "plates/starfield/layer-a-sky.webp"
+IDR_PLATE_STARS_B RCDATA "plates/starfield/layer-b-mountains.webp"
+IDR_PLATE_STARS_C RCDATA "plates/starfield/layer-c-mid.webp"
+IDR_PLATE_STARS_D RCDATA "plates/starfield/layer-d-foreground.webp"
+IDR_PLATE_AURORA_A RCDATA "plates/aurora/layer-a-sky.webp"
+IDR_PLATE_AURORA_B RCDATA "plates/aurora/layer-b-mountains.webp"
+IDR_PLATE_AURORA_C RCDATA "plates/aurora/layer-c-mid.webp"
+IDR_PLATE_AURORA_D RCDATA "plates/aurora/layer-d-foreground.webp"
+
 1 24 "app.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION     1,11,0,0
-PRODUCTVERSION  1,11,0,0
+FILEVERSION     1,12,0,0
+PRODUCTVERSION  1,12,0,0
 FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
 FILEFLAGS       0
 FILEOS          VOS_NT_WINDOWS32
@@ -21,11 +38,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Stalgia"
             VALUE "FileDescription",  "Stalgia animated wallpaper"
-            VALUE "FileVersion",      "1.11.0"
+            VALUE "FileVersion",      "1.12.0"
             VALUE "InternalName",     "Stalgia"
             VALUE "OriginalFilename", "Stalgia.exe"
             VALUE "ProductName",      "Stalgia"
-            VALUE "ProductVersion",   "1.11.0"
+            VALUE "ProductVersion",   "1.12.0"
             VALUE "LegalCopyright",   "GPL-3.0"
         END
     END

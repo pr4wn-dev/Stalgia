@@ -81,6 +81,7 @@ private:
     void handleIpc(const WallpaperHost::IpcMessage& msg);
     void tickSelftest();
     void notePresetSwitch(const std::string& id, int preset);
+    void awaitSwitchReady(const std::string& id, int preset);
     void advanceSelftestPreset(const std::vector<EffectInfo>& list);
     void finishSelftest(bool pass, const char* extra);
     void writeSelftestReport() const;
@@ -134,7 +135,10 @@ private:
     bool m_autostartApplied = false;
     ULONGLONG m_saveDeadline = 0;
     bool m_stWindow = false;
+    bool m_stHaveGrid = false;
     double m_stSwitchMs = 0;
+    float m_framePlateMask = 0.0f;
+    std::vector<float> m_stGrid;
     int m_stPhase = 0;
     int m_stEffect = 0;
     int m_stPreset = 0;

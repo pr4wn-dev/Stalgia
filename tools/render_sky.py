@@ -118,7 +118,12 @@ def hex_rgb(v):
 
 
 def tonemap(col):
-    return 1.0 - np.exp(-1.1 * np.maximum(col, 0.0))
+    """Hue-preserving shoulder. Peak is mapped, channel ratios stay put."""
+    c = np.maximum(col, 0.0)
+    m = np.maximum(np.maximum(c[0], c[1]), c[2])
+    t = 1.0 - np.exp(-1.1 * m)
+    scale = t / np.maximum(m, 1e-4)
+    return c * scale
 
 
 def grade(col, uv, width, height, look, quantize=False):
@@ -249,11 +254,13 @@ def milky(p, uv):
     return diag, along, core, env, sky_keep
 
 
-def paint_band(col, p, uv, pixel_x, pixel_y, band_scale):
+def paint_band(col, p, uv, pixel_x, pixel_y, band_scale, detail_gain=1.0, cool=0.0, dust_gain=1.0):
     diag, along, core, env, sky_keep = milky(p, uv)
     arm_col = np.array([0.55, 0.66, 0.98], dtype=np.float32)
     core_col = np.array([0.92, 0.68, 0.40], dtype=np.float32)
     glow_col = lerp(arm_col[:, None, None], core_col[:, None, None], core)
+    if cool:
+        glow_col = lerp(glow_col, glow_col * np.array([0.70, 0.84, 1.12], dtype=np.float32)[:, None, None], cool)
     glow = np.zeros_like(col)
     base = (0.18 + 0.42 * core) * env * band_scale
     for c in range(3):
@@ -274,16 +281,16 @@ def paint_band(col, p, uv, pixel_x, pixel_y, band_scale):
     filaments = filaments * filaments
     dust = saturate(rift * rift_span * 0.85 + filaments * 0.40 * band)
     detail_amp = (0.22 + 0.48 * core) * (0.40 + 0.60 * clouds) * band * (1.0 - 0.70 * dust) * band_scale
-    detail_amp = np.where(detail_on, detail_amp, 0.0) * fade
+    detail_amp = np.where(detail_on, detail_amp, 0.0) * fade * detail_gain
     knots = smoothstep(0.78, 0.90, fbm2(along * 3.0, diag_w * 8.0))
-    knot_amp = np.where(detail_on, knots * 0.10 * band * band_scale * fade, 0.0)
+    knot_amp = np.where(detail_on, knots * 0.10 * band * band_scale * fade, 0.0) * detail_gain
     gx = np.floor(pixel_x * 0.75)
     gy = np.floor(pixel_y * 0.75)
     h1 = hash12(gx, gy)
     h2 = hash12(gx + 19.0, gy + 3.0)
     haze = np.where(h1 > (1.0 - 0.38 * band), np.power(h2, 2.4) * 0.28 * (1.0 - dust), 0.0)
-    haze = np.where(detail_on, haze * band_scale * fade, 0.0)
-    ext = lerp(1.0, 1.0 - 0.48 * dust * band, np.where(detail_on, fade, 0.0))
+    haze = np.where(detail_on, haze * band_scale * fade, 0.0) * detail_gain
+    ext = lerp(1.0, 1.0 - 0.48 * dust * band * dust_gain, np.where(detail_on, fade, 0.0))
     pink = np.array([1.0, 0.40, 0.48], dtype=np.float32)
     for c in range(3):
         glow[c] *= ext
@@ -406,7 +413,7 @@ def add_stars_mask(col, p, height, time, scroll, twinkle, density, tint, scale, 
         col[c] += bb[c] * shade * float(tint[c])
 
 
-def aurora_ribbons(px, py, t, height_k, rays_k, ca, cb, surge, aspect, lift, edge):
+def aurora_ribbons(px, py, t, height_k, rays_k, ca, cb, surge, aspect, lift, edge, hem_bias=0.0):
     curtain = np.zeros((3,) + px.shape, dtype=np.float32)
     ca = np.asarray(ca, dtype=np.float32)[:, None, None]
     cb = np.asarray(cb, dtype=np.float32)[:, None, None]
@@ -427,8 +434,8 @@ def aurora_ribbons(px, py, t, height_k, rays_k, ca, cb, surge, aspect, lift, edg
         gain = np.clip(0.35 / np.maximum(np.abs(dqx), 0.05), 0.6, 2.5)
         gain = 0.55 + 0.55 * gain
         fold = fbm2(qx * 0.7 + layer * 2.2, np.full_like(px, 0.3 + t * 0.01))
-        base = lerp(0.92, 0.64, height_k) - y_lift - lift
-        base = base + (fold - 0.48) * 0.42
+        base = lerp(0.56, 0.38, height_k) - y_lift - lift
+        base = np.minimum(base + (fold - 0.48) * 0.16, 0.58) + hem_bias
         above = base - py
         h_len = lerp(0.06, 0.24, height_k) * h_scale
         rx = qx + (px - 0.5 * aspect) * np.maximum(above, 0.0) * 0.35
@@ -437,7 +444,8 @@ def aurora_ribbons(px, py, t, height_k, rays_k, ca, cb, surge, aspect, lift, edg
         ray = 0.35 + 0.65 * np.power(saturate(ray_n), 2.5) + 0.25 * ray_f
         ray = lerp(1.0, ray, rays_k * ray_contrast)
         hs = h_len * (0.45 + 0.9 * ray)
-        body = smoothstep(-0.0025, 0.0015, above) * np.exp(-np.maximum(above, 0.0) / np.maximum(hs, 1e-3))
+        edge_lo, edge_hi = (-0.12, 0.04) if hem_bias else (-0.0025, 0.0015)
+        body = smoothstep(edge_lo, edge_hi, above) * np.exp(-np.maximum(above, 0.0) / np.maximum(hs, 1e-3))
         hem = np.exp(-np.maximum(above, 0.0) / 0.0045) * edge_boost
         knots = 0.6 + 0.8 * vnoise1(qx * 6.0)
         intensity = body * (1.0 + 2.4 * hem) * knots * gain
@@ -456,9 +464,9 @@ def aurora_ribbons(px, py, t, height_k, rays_k, ca, cb, surge, aspect, lift, edg
             curtain[c] += np.array([1.0, 0.35, 0.55], dtype=np.float32)[c] * pink * 0.45 * mask
     # Faint third arc, no rays, above the main curtains.
     w = fbm2(px * 0.30 + 5.0, np.full_like(px, 1.2))
-    base3 = lerp(0.92, 0.64, height_k) - lift - 0.16 + (w - 0.5) * 0.20
+    base3 = np.minimum(lerp(0.56, 0.38, height_k) - lift - 0.08 + (w - 0.5) * 0.10, 0.52)
     a3 = base3 - py
-    i3 = smoothstep(-0.01, 0.004, a3) * np.exp(-np.maximum(a3, 0.0) / 0.16) * 0.06
+    i3 = smoothstep(-0.10, 0.06, a3) * np.exp(-np.maximum(a3, 0.0) / 0.16) * 0.06
     for c in range(3):
         curtain[c] += ca[c] * i3
     return curtain
@@ -570,11 +578,11 @@ def render_aurora(w, h, preset, time):
     col[0] = lerp(0.002, 0.008, sky_t)
     col[1] = lerp(0.003, 0.010, sky_t)
     col[2] = lerp(0.008, 0.020, sky_t)
-    if stars:
+    if stars or True:
         p = np.stack([(uv[0] - 0.5) * aspect, uv[1] - 0.5], axis=0)
         tint = np.array([0.85, 0.9, 1.0], dtype=np.float32)
-        add_stars(col, p, h, time, 0.0, 0.0, np.array([1.0, 0.0], dtype=np.float32), 0.35, 0.55, tint,
-                  ((80.0, 0.7, 0.012),), (0.0, 0.0))
+        add_stars(col, p, h, time, 0.0, 0.0, np.array([1.0, 0.0], dtype=np.float32), 0.45, 0.65, tint,
+                  ((70.0, 0.7, 0.045),), (0.0, 0.0), field=True)
     ca = hex_rgb(color_a)
     cb = hex_rgb(color_b)
     surge = 0.72 + 0.28 * float(vnoise(np.array(t * 0.045), np.array(2.2)))

@@ -92,7 +92,8 @@ void MatrixRain::rebuildColumns() {
 void MatrixRain::resetColumn(Column& c, bool spawnOnScreen) {
     uint32_t s = c.seed ^ (c.generation * 0x85EBCA6Bu);
         c.base = 8.0f + rand01(s) * 22.0f;
-        c.layer = 0.35f + rand01(s) * 0.65f;
+        const float bucket = rand01(s);
+        c.layer = bucket < 0.35f ? 0.35f : (bucket < 0.75f ? 0.68f : 1.0f);
         c.trail = m_cfg.trailLength * (0.55f + rand01(s) * 0.9f);
     c.generation++;
     c.seed = hashu(s ^ 0xA5A5A5A5u);
@@ -165,7 +166,6 @@ void MatrixRain::render(const FrameContext& ctx) {
     m_instances.clear();
     m_instances.reserve((size_t)m_cols.size() * (size_t)std::min(m_rows, (int)m_cfg.trailLength + 8));
 
-    const float fadePow = std::max(0.4f, m_cfg.fadePower);
     const uint32_t timeSalt = (uint32_t)std::llround(m_time * 8.0);
     const float dirSign = m_cfg.direction >= 0.0f ? 1.0f : -1.0f;
 
@@ -174,11 +174,12 @@ void MatrixRain::render(const FrameContext& ctx) {
         if (!c.active || c.delay > 0) continue;
 
         const float layerMix = 1.0f - std::clamp(m_cfg.depth, 0.0f, 1.0f) + std::clamp(m_cfg.depth, 0.0f, 1.0f) * c.layer;
-        const float draw = m_cell * (0.62f + 0.38f * layerMix);
-        const float dim = 0.38f + 0.62f * layerMix;
+        const float draw = m_cell * (0.55f + 0.45f * layerMix);
+        const float dim = 0.32f + 0.68f * layerMix;
         const float wind = std::sin((float)m_time * 0.55f + (float)i * 0.37f) * m_cfg.wind * m_cell * 0.9f;
         const float parallax = ctx.lookX * (1.15f - layerMix) * m_cell * 10.0f;
-        float x = (float)i * m_cell + (m_cell - draw) * 0.5f + wind + parallax;
+        const float layerShift = (c.layer < 0.5f) ? m_cell * 0.33f : (c.layer < 0.85f ? m_cell * 0.62f : 0.0f);
+        float x = (float)i * m_cell + (m_cell - draw) * 0.5f + wind + parallax + layerShift;
         if (c.glitch > 0) x += (float)((int)(hashu(c.seed ^ timeSalt) & 7) - 3);
         const int trailCells = std::max(4, (int)std::ceil(c.trail));
         const int headCell = (int)std::floor(c.head);
@@ -191,14 +192,16 @@ void MatrixRain::render(const FrameContext& ctx) {
 
             const float dist = std::fabs(c.head - (float)row);
             const float t = std::clamp(dist / std::max(1.0f, c.trail), 0.0f, 1.0f);
+            const float headFrac = c.head - std::floor(c.head);
 
             uint32_t h = hashu(c.seed ^ (uint32_t)row * 0x9E3779B9u ^ (c.generation * 7u));
-            const float mutate = (k == 0) ? std::max(m_cfg.mutate, 0.25f) : m_cfg.mutate;
-            if (mutate > 0) {
-                const uint32_t flicker = hashu(h ^ timeSalt ^ (uint32_t)k);
-                if ((flicker & 0xFFFF) / 65535.0f < mutate) {
-                    h ^= flicker;
-                }
+            const float rate = (k <= 1) ? 12.0f : (0.45f + 1.1f * ((h >> 8) & 255) / 255.0f);
+            const float phase = ((h >> 16) & 255) / 255.0f;
+            const uint32_t tick = (uint32_t)std::floor(m_time * rate + phase * 64.0);
+            const float mutate = (k <= 1) ? std::max(m_cfg.mutate, 0.35f) : m_cfg.mutate;
+            if (mutate > 0.0f) {
+                const uint32_t flicker = hashu(h ^ tick);
+                if ((flicker & 0xFFFF) / 65535.0f < mutate) h ^= flicker;
             }
             const int gi = (int)(h % (uint32_t)nGlyphs);
 
@@ -209,35 +212,25 @@ void MatrixRain::render(const FrameContext& ctx) {
             g.rect[3] = draw;
             m_atlas.uvFor(gi, g.uv[0], g.uv[1], g.uv[2], g.uv[3]);
 
-            if (k == 0) {
-                if (m_cfg.bloom > 0.02f) {
-                    const float o = draw * (0.10f + 0.16f * m_cfg.bloom);
-                    const float offs[4][2] = {{o, 0}, {-o, 0}, {0, o}, {0, -o}};
-                    for (int b = 0; b < 4; ++b) {
-                        GlyphInstance glow = g;
-                        glow.rect[0] = x + offs[b][0];
-                        glow.rect[1] = y + offs[b][1];
-                        glow.color[0] = hr;
-                        glow.color[1] = hg;
-                        glow.color[2] = hb;
-                        glow.color[3] = std::clamp(0.10f * m_cfg.bloom * dim, 0.0f, 0.28f);
-                        m_instances.push_back(glow);
-                    }
-                }
+            // The head eases across two cells. The grade pass blooms it; offset copies read as a plus.
+            if (k <= 1) {
+                const float headW = (k == 0) ? headFrac : (1.0f - headFrac);
                 g.color[0] = hr * dim;
                 g.color[1] = hg * dim;
                 g.color[2] = hb * dim;
-                g.color[3] = 1.0f;
+                g.color[3] = std::clamp(headW, 0.0f, 1.0f);
             } else {
-                const float fade = std::pow(1.0f - t, fadePow);
-                const float nearHead = (k < 3) ? 0.55f + 0.45f * fade : fade;
+                const float tau = std::max(1.0f, c.trail / 3.2f);
+                float fade = std::exp(-(float)(k - 2) / tau);
+                if (t > 0.80f) fade *= std::clamp((1.0f - t) / 0.20f, 0.0f, 1.0f);
                 const float flick = (c.glitch > 0 && (hashu(h ^ timeSalt) & 3) == 0) ? 0.35f : 1.0f;
-                g.color[0] = br * nearHead * dim * flick;
-                g.color[1] = bg * nearHead * dim * flick;
-                g.color[2] = bb * nearHead * dim * flick;
-                g.color[3] = std::clamp(nearHead * 1.15f * dim, 0.0f, 1.0f);
+                const float jitter = 0.88f + 0.24f * ((h >> 4) & 255) / 255.0f;
+                g.color[0] = br * fade * dim * flick * jitter;
+                g.color[1] = bg * fade * dim * flick * jitter;
+                g.color[2] = bb * fade * dim * flick * jitter * (0.92f + 0.08f * t);
+                g.color[3] = std::clamp(fade * 1.05f * dim, 0.0f, 1.0f);
             }
-            m_instances.push_back(g);
+            if (g.color[3] > 0.02f) m_instances.push_back(g);
         }
     }
 
