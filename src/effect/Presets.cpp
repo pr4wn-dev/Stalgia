@@ -802,7 +802,8 @@ void applyPreset(AppSettings& s, const std::string& id, int index) {
             m.mist = 0.82f;
             m.stars = 0.0f;
             m.woods = 0.95f;
-            lookPreset(m.look, 0.82f, 0.95f, 0.42f, true, false, 30);
+            m.style = 1;
+            lookPreset(m.look, 0.95f, 0.95f, 0.38f, false, false, 30);
         } else if (index == 2) {
             m.color = 0xE8FF8A;
             m.speed = 0.38f;
@@ -810,6 +811,7 @@ void applyPreset(AppSettings& s, const std::string& id, int index) {
             m.mist = 0.32f;
             m.stars = 0.9f;
             m.woods = 0.12f;
+            m.style = 2;
             lookPreset(m.look, 1.05f, 1.15f, 0.20f, false, true, 30);
         }
     } else if (id == "snow") {
@@ -820,14 +822,14 @@ void applyPreset(AppSettings& s, const std::string& id, int index) {
             m.density = 1.15f;
             m.wind = 0.38f;
             m.backdrop = 1;
-            lookPreset(m.look, 0.96f, 0.9f, 0.30f, true, false, 30);
+            lookPreset(m.look, 1.0f, 0.9f, 0.30f, false, false, 30);
         } else if (index == 2) {
             m.color = 0xFFF4E4;
             m.speed = 0.28f;
             m.density = 0.75f;
             m.wind = 0.10f;
             m.backdrop = 2;
-            lookPreset(m.look, 1.0f, 1.05f, 0.18f, false, false, 30);
+            lookPreset(m.look, 1.0f, 1.05f, 0.30f, false, false, 30);
         }
     }
 }

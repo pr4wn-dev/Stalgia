@@ -69,6 +69,8 @@ void Fireflies::render(const FrameContext& ctx) {
     cb.p0 = m_cfg.mist;
     cb.p1 = m_cfg.stars;
     cb.p2 = m_cfg.woods;
+    cb.direction = (float)m_cfg.style;
+    cb.p3 = m_mask ? -1.0f : 0.0f;
     cb.lookX = ctx.lookX;
     cb.lookY = ctx.lookY;
     cb.quality = ctx.renderer->isWarp() ? 0.0f : 1.0f;

@@ -48,4 +48,7 @@ public:
 
     // True only when this effect's real shader is bound. A fallback fill does not count.
     virtual bool ready() const { return true; }
+
+    // p3 = -1 writes layer masks instead of color. Used by --selftest and --capture.
+    virtual void setDebugMask(bool) {}
 };

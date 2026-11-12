@@ -10,7 +10,7 @@
 
 // Shared 1.4.5-style rain-reveal: dense wrapping katakana rain, character
 // visible only because trails are brighter / slower-fading inside a luma mask.
-// Optional RGB palette tints glyphs inside the silhouette (Slow Myco Color).
+// Optional RGB palette tints glyphs inside the silhouette.
 struct CharacterMask {
     const unsigned char* luma = nullptr;
     const unsigned char* rgb = nullptr;  // RGB888, same w*h as luma, or null

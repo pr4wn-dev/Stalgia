@@ -29,6 +29,12 @@ jobs:
       - name: Build
         run: cmake --build build-mingw -j
 
+      # CPU art-direction checks (C1–C16). They fail on the first-pass look.
+      - name: Scene checks
+        run: |
+          pip install numpy pillow
+          python3 tools/render_sky.py --check --scale 0.5 --out /tmp/stills
+
       # Unsigned exe. Artifact name is stable so a SignPath signing step can
       # be inserted later: submit Stalgia-unsigned, then publish the signed file.
       - name: Upload unsigned exe

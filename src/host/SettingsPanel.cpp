@@ -277,10 +277,10 @@ void SettingsPanel::createControls() {
     m_lblTrail = addStatic(L"Trail length", 0);
     m_slTrail = addTrack(IDC_SL_TRAIL, 6, 60);
     m_valTrail = addStatic(L"22", 0, SS_RIGHT | SS_CENTERIMAGE | SS_NOPREFIX);
-    m_lblExtra1 = addStatic(L"Ape size", 0);
+    m_lblExtra1 = addStatic(L"Size", 0);
     m_slExtra1 = addTrack(IDC_SL_EXTRA1, 50, 95);
     m_valExtra1 = addStatic(L"0.68", 0, SS_RIGHT | SS_CENTERIMAGE | SS_NOPREFIX);
-    m_lblExtra2 = addStatic(L"Ape position", 0);
+    m_lblExtra2 = addStatic(L"Position", 0);
     m_slExtra2 = addTrack(IDC_SL_EXTRA2, 25, 75);
     m_valExtra2 = addStatic(L"0.50", 0, SS_RIGHT | SS_CENTERIMAGE | SS_NOPREFIX);
     m_chkEye = addCheck(L"Eye glow", IDC_CHK_EYE);
@@ -589,16 +589,15 @@ void SettingsPanel::syncToUi() {
     setText(m_lblColorA, lava ? L"Lava color" : reveal ? L"Code color" : L"Color");
     setText(m_lblColorB, matrix ? L"Head color" : lava ? L"Liquid tint" : L"Second color");
     setText(m_lblDensity, lava ? L"Blobs" : reveal ? L"Rain density" : L"Density");
-    setText(m_lblExtra1, snow ? L"Wind" : ape ? L"Ape size" : myco ? L"Size" : L"Ape size");
+    setText(m_lblExtra1, snow ? L"Wind" : reveal ? L"Size" : L"Size");
     setText(m_lblGlyph, lava ? L"Glow" : L"Glyph size");
     setText(m_lblTrail, lava ? L"Blob size" : reveal ? L"Brightness" : L"Trail length");
-    setText(m_lblExtra2, ape ? L"Ape position" : myco ? L"Position" : L"Ape position");
+    setText(m_lblExtra2, reveal ? L"Position" : L"Position");
     setText(m_grpFx, matrix   ? L"Matrix settings"
                      : star   ? L"Starfield settings"
                      : aurora ? L"Aurora settings"
                      : lava   ? L"Lava lamp settings"
-                     : myco   ? L"Slow Myco settings"
-                     : ape    ? L"Code Ape settings"
+                     : reveal ? L"Reveal settings"
                      : fire   ? L"Fireflies settings"
                      : snow   ? L"Snowfall settings"
                               : L"Wallpaper settings");

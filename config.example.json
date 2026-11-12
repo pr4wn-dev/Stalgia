@@ -5,8 +5,8 @@
     "starfield": 2,
     "aurora": 2,
     "lava": 2,
-    "fireflies": 1,
-    "snow": 1
+    "fireflies": 2,
+    "snow": 2
   },
   "fps": 30,
   "effect": "matrix",

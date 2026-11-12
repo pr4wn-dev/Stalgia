@@ -811,7 +811,13 @@ def main():
     ap.add_argument("--out", default="docs")
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--only", default="")
+    ap.add_argument("--check", action="store_true", help="run the art-direction objective checks")
     args = ap.parse_args()
+    if args.check:
+        from scene_check import run as run_checks
+        code = run_checks(args.scale)
+        if code:
+            raise SystemExit(code)
     os.makedirs(args.out, exist_ok=True)
     w = max(16, int(W0 * args.scale))
     h = max(16, int(H0 * args.scale))
@@ -827,8 +833,9 @@ def main():
             img = render_stars(w, h, preset, time)
         elif kind == "aurora":
             img = render_aurora(w, h, preset, time)
-        elif kind == "fireflies":
-            img = render_fireflies(w, h, preset, time)
+        elif kind in ("fireflies", "snow"):
+            from night_scene import encode_named
+            img, _ = encode_named(f"{kind}-{name}", w, h, time=time)
         else:
             img = render_snow(w, h, preset, time)
         filename = f"{kind}-{name}.png"

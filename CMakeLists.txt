@@ -41,20 +41,41 @@ set(STALGIA_SOURCES
 )
 
 # Extra effect sources live outside the repo. Off by default, so the public
-# build does not include them. The directory must define registerPrivateEffects.
+# build does not include them. The directory must define registerPrivateEffects
+# in register.cpp. Pass -DSTALGIA_PRIVATE_EFFECTS_DIR=<path> to turn it on.
+# The cache value is cleared at the end of this file so a later configure
+# without -D does not keep a private folder attached. To drop it immediately:
+#   cmake -USTALGIA_PRIVATE_EFFECTS_DIR
 set(STALGIA_PRIVATE_EFFECTS_DIR "" CACHE PATH
-    "Directory of extra effect sources compiled into this build. Empty skips them.")
+    "Directory of extra effect sources compiled into this build. Empty skips them. Not sticky: cleared after configure.")
 if(STALGIA_PRIVATE_EFFECTS_DIR)
+    get_filename_component(_stalgia_private "${STALGIA_PRIVATE_EFFECTS_DIR}" ABSOLUTE)
+    file(RELATIVE_PATH _stalgia_private_rel "${CMAKE_SOURCE_DIR}" "${_stalgia_private}")
+    if(NOT _stalgia_private_rel MATCHES "^\\.\\./")
+        message(FATAL_ERROR
+            "STALGIA_PRIVATE_EFFECTS_DIR must be outside the source tree (refusing ${_stalgia_private}). "
+            "Clear a sticky cache value with -USTALGIA_PRIVATE_EFFECTS_DIR.")
+    endif()
+    if(NOT EXISTS "${_stalgia_private}/register.cpp")
+        message(FATAL_ERROR
+            "STALGIA_PRIVATE_EFFECTS_DIR has no register.cpp (expected ${_stalgia_private}/register.cpp). "
+            "That file must define registerPrivateEffects.")
+    endif()
     file(GLOB STALGIA_PRIVATE_SOURCES CONFIGURE_DEPENDS
-        "${STALGIA_PRIVATE_EFFECTS_DIR}/*.cpp"
-        "${STALGIA_PRIVATE_EFFECTS_DIR}/effects/*.cpp")
+        "${_stalgia_private}/*.cpp"
+        "${_stalgia_private}/effects/*.cpp")
     if(NOT STALGIA_PRIVATE_SOURCES)
-        message(FATAL_ERROR "STALGIA_PRIVATE_EFFECTS_DIR is set but contains no .cpp files: ${STALGIA_PRIVATE_EFFECTS_DIR}")
+        message(FATAL_ERROR "STALGIA_PRIVATE_EFFECTS_DIR is set but contains no .cpp files: ${_stalgia_private}")
     endif()
     list(APPEND STALGIA_SOURCES ${STALGIA_PRIVATE_SOURCES})
+    message(STATUS "Private effects: ${_stalgia_private}")
 else()
     list(APPEND STALGIA_SOURCES src/effect/PrivateEffects.cpp)
+    set(_stalgia_private "")
+    message(STATUS "Private effects: off")
 endif()
+# Drop the cache entry so the next configure is public unless -D is passed again.
+unset(STALGIA_PRIVATE_EFFECTS_DIR CACHE)
 
 set(SEH_OBJ ${CMAKE_CURRENT_BINARY_DIR}/SehGuard.obj)
 if(MSVC)
@@ -78,8 +99,8 @@ endif()
 add_executable(Stalgia WIN32 ${STALGIA_SOURCES})
 
 target_include_directories(Stalgia PRIVATE src resources)
-if(STALGIA_PRIVATE_EFFECTS_DIR)
-    target_include_directories(Stalgia PRIVATE "${STALGIA_PRIVATE_EFFECTS_DIR}")
+if(_stalgia_private)
+    target_include_directories(Stalgia PRIVATE "${_stalgia_private}")
 endif()
 
 target_compile_definitions(Stalgia PRIVATE

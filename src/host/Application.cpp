@@ -1451,7 +1451,8 @@ void Application::tickSelftest() {
         if (now - m_stPhaseAt < 700) return;
         const int gained = m_renderer.presentCount() - m_stPresentsMark;
         int lit = 0;
-        const float luma = m_renderer.sampleSceneLuma(&lit);
+        int sampled = 0;
+        const float luma = m_renderer.sampleSceneLuma(&lit, &sampled);
         const float gpuMs = m_renderer.lastGpuMs();
         char gpuBuf[32];
         if (gpuMs < 0.0f) std::snprintf(gpuBuf, sizeof(gpuBuf), "- (no timestamp)");
@@ -1468,7 +1469,7 @@ void Application::tickSelftest() {
         float cover = 0.0f;
         bool coverOk = true;
         if (id == "fireflies" || id == "snow") {
-            const int pixels = std::max(1, m_renderer.width() * m_renderer.height());
+            const int pixels = std::max(1, sampled);
             cover = (float)lit / (float)pixels;
             // Glows and flakes should cover part of the frame, not a flat field or noise.
             coverOk = cover >= 0.002f && cover <= 0.40f;

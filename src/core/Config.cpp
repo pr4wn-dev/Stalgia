@@ -365,6 +365,20 @@ bool Config::migrateStaleTunes() {
     return dirty;
 }
 
+namespace {
+void stampCurrentTunes(AppSettings& s) {
+    s.version = Config::kFormatVersion;
+    s.tuneMatrix = Config::kTuneMatrix;
+    s.tuneStarfield = Config::kTuneStarfield;
+    s.tuneAurora = Config::kTuneAurora;
+    s.tuneLava = Config::kTuneLava;
+    s.tuneApe = Config::kTuneApe;
+    s.tuneMyco = Config::kTuneMyco;
+    s.tuneFireflies = Config::kTuneFireflies;
+    s.tuneSnow = Config::kTuneSnow;
+}
+}
+
 bool Config::load() {
     m_migrated = false;
     m_fresh = false;
@@ -372,13 +386,7 @@ bool Config::load() {
     if (!fileExists(m_path)) {
         m_fresh = true;
         m_s = AppSettings{};
-        m_s.version = kFormatVersion;
-        m_s.tuneMatrix = kTuneMatrix;
-        m_s.tuneStarfield = kTuneStarfield;
-        m_s.tuneAurora = kTuneAurora;
-        m_s.tuneLava = kTuneLava;
-        m_s.tuneApe = kTuneApe;
-        m_s.tuneMyco = kTuneMyco;
+        stampCurrentTunes(m_s);
         LOG_INFO("No config at %s — writing defaults (format %d)", narrow(m_path).c_str(), kFormatVersion);
         save();
         return true;
@@ -392,6 +400,7 @@ bool Config::load() {
         LOG_WARN("Config file empty, using defaults");
         copyFile(m_path, m_path + L".bad");
         m_s = AppSettings{};
+        stampCurrentTunes(m_s);
         save();
         return true;
     }
@@ -399,13 +408,7 @@ bool Config::load() {
         LOG_WARN("Failed to parse config; copied it to config.json.bad and loading defaults");
         copyFile(m_path, m_path + L".bad");
         m_s = AppSettings{};
-        m_s.version = kFormatVersion;
-        m_s.tuneMatrix = kTuneMatrix;
-        m_s.tuneStarfield = kTuneStarfield;
-        m_s.tuneAurora = kTuneAurora;
-        m_s.tuneLava = kTuneLava;
-        m_s.tuneApe = kTuneApe;
-        m_s.tuneMyco = kTuneMyco;
+        stampCurrentTunes(m_s);
         save();
         return true;
     }
@@ -417,8 +420,8 @@ bool Config::load() {
                  kFormatVersion);
         save();
     }
-    LOG_INFO("Loaded config from %s effect=%s format=%d tune.ape=%d widget=%d",
-             narrow(m_path).c_str(), m_s.effect.c_str(), m_s.version, m_s.tuneApe,
+    LOG_INFO("Loaded config from %s effect=%s format=%d tune.fireflies=%d tune.snow=%d widget=%d",
+             narrow(m_path).c_str(), m_s.effect.c_str(), m_s.version, m_s.tuneFireflies, m_s.tuneSnow,
              m_s.showWidget ? 1 : 0);
     return true;
 }
@@ -724,7 +727,7 @@ std::string Config::serialize() const {
     o << "    \"snow\": " << kTuneSnow << "\n";
     o << "  },\n";
     o << "  \"fps\": " << m_s.fps << ",\n";
-    o << "  \"effect\": \"" << m_s.effect << "\",\n";
+    o << "  \"effect\": \"" << jsonEscape(m_s.effect) << "\",\n";
     o << "  \"favorites\": [";
     for (size_t fi = 0; fi < m_s.favorites.size(); ++fi) {
         if (fi) o << ", ";

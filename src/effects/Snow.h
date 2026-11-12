@@ -20,6 +20,7 @@ public:
     void render(const FrameContext& ctx) override;
     void precompile(Renderer* renderer) override;
     bool ready() const override { return m_ready; }
+    void setDebugMask(bool on) override { m_mask = on; }
 
 private:
     int ensure(Renderer* renderer, int blockMs);
@@ -29,4 +30,5 @@ private:
     double m_time = 0;
     bool m_ready = false;
     bool m_failed = false;
+    bool m_mask = false;
 };

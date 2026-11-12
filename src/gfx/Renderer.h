@@ -77,7 +77,9 @@ public:
     float lastGpuMs() const { return m_lastGpuMs; }
     // Brightest linear pixel in the scene, and how many pixels clear a lit threshold.
     // A sparse effect (matrix glyphs) fails a patch average and passes this.
-    float sampleSceneLuma(int* litPixels = nullptr);
+    // sampleCount is the number of scene-target pixels actually read, which is
+    // the denominator for coverage. It is not the swapchain size.
+    float sampleSceneLuma(int* litPixels = nullptr, int* sampleCount = nullptr);
     // Largest step, as a fraction of the band peak, where the Milky Way feather falls
     // toward the sky. A hard diagonal cutoff is well above a smooth gaussian.
     float sampleBandEdge();

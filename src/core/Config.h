@@ -80,6 +80,7 @@ struct FireflySettings {
     float mist = 0.55f;
     float stars = 0.35f;
     float woods = 0.45f;
+    int style = 0;  // 0 summer dusk, 1 deep woods, 2 meadow
     EffectLook look;
     FireflySettings() {
         look.fpsCap = 30;
@@ -98,6 +99,7 @@ struct SnowSettings {
     SnowSettings() {
         look.fpsCap = 30;
         look.vignette = 0.22f;
+        look.saturation = 0.9f;
     }
 };
 
@@ -183,8 +185,8 @@ public:
     static constexpr int kTuneLava = 2;        // 1.9.0 lamp, viscosity, heat
     static constexpr int kTuneApe = 3;         // 1.9.0 reveal, detail, custom image
     static constexpr int kTuneMyco = 3;
-    static constexpr int kTuneFireflies = 1;   // 1.11.0 dusk forest
-    static constexpr int kTuneSnow = 1;        // 1.11.0 layered snowfall
+    static constexpr int kTuneFireflies = 2;   // 1.11.0 art-direction forest
+    static constexpr int kTuneSnow = 2;        // 1.11.0 art-direction snowfall
 
     bool load();
     bool save() const;

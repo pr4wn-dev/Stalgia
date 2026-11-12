@@ -1,5 +1,6 @@
 #include "effect/EffectRegistry.h"
 
+#include "core/Log.h"
 #include "effect/PrivateEffects.h"
 #include "effects/Aurora.h"
 #include "effects/Fireflies.h"
@@ -21,6 +22,14 @@ void EffectRegistry::add(const char* id, const char* displayName, const char* gr
 
 void EffectRegistry::addExternal(const char* id, const char* displayName, const char* group,
                                  const char* description, Factory factory) {
+    if (!id || !id[0]) {
+        LOG_WARN("Private effect rejected: empty id");
+        return;
+    }
+    if (contains(id)) {
+        LOG_WARN("Private effect rejected: duplicate id '%s'", id);
+        return;
+    }
     add(id, displayName, group, description, std::move(factory));
 }
 
