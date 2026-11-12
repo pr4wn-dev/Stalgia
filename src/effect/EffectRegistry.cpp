@@ -1,10 +1,11 @@
 #include "effect/EffectRegistry.h"
 
+#include "effect/PrivateEffects.h"
 #include "effects/Aurora.h"
-#include "effects/CodeApe.h"
+#include "effects/Fireflies.h"
 #include "effects/LavaLamp.h"
 #include "effects/MatrixRain.h"
-#include "effects/SlowMyco.h"
+#include "effects/Snow.h"
 #include "effects/Starfield.h"
 
 void EffectRegistry::add(const char* id, const char* displayName, const char* group, const char* description,
@@ -18,20 +19,26 @@ void EffectRegistry::add(const char* id, const char* displayName, const char* gr
     m_entries.push_back(std::move(e));
 }
 
+void EffectRegistry::addExternal(const char* id, const char* displayName, const char* group,
+                                 const char* description, Factory factory) {
+    add(id, displayName, group, description, std::move(factory));
+}
+
 EffectRegistry::EffectRegistry() {
     // New wallpapers only need a group and a one-line description here.
     add("matrix", "Matrix (Classic)", "Matrix Rain", "Classic falling katakana rain.",
         [] { return std::unique_ptr<IEffect>(new MatrixRain()); });
-    add("ape", "Code Ape", "Matrix Rain", "Rain that reveals a silverback.",
-        [] { return std::unique_ptr<IEffect>(new CodeApe()); });
-    add("myco", "Slow Myco", "Matrix Rain", "Rain that reveals a mushroom turtle.",
-        [] { return std::unique_ptr<IEffect>(new SlowMyco()); });
     add("starfield", "Stars", "Space", "Deep night sky, the Milky Way, and a warp mode.",
         [] { return std::unique_ptr<IEffect>(new Starfield()); });
     add("aurora", "Aurora", "Space", "Folded ribbons with a bright green hem and rising rays.",
         [] { return std::unique_ptr<IEffect>(new Aurora()); });
     add("lava", "Lava", "Retro", "You are inside the lamp.",
         [] { return std::unique_ptr<IEffect>(new LavaLamp()); });
+    add("fireflies", "Fireflies", "Night", "Dusk forest, drifting fireflies, and a faint mist.",
+        [] { return std::unique_ptr<IEffect>(new Fireflies()); });
+    add("snow", "Snow", "Night", "Layered snowfall over a night sky, pines, or a window.",
+        [] { return std::unique_ptr<IEffect>(new Snow()); });
+    registerPrivateEffects(*this);
 }
 
 std::vector<EffectInfo> EffectRegistry::list() const {

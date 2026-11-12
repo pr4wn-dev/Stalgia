@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Stalgia VERSION 1.10.6 LANGUAGES CXX RC)
+project(Stalgia VERSION 1.11.0 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,11 +20,9 @@ set(STALGIA_SOURCES
     src/effects/LavaField.cpp
     src/effects/RainReveal.cpp
     src/effects/ImageMask.cpp
+    src/effects/Fireflies.cpp
+    src/effects/Snow.cpp
     src/effect/Presets.cpp
-    src/effects/CodeApe.cpp
-    src/effects/SlowMyco.cpp
-    src/effects/ApeMaskData.cpp
-    src/effects/MycoMaskData.cpp
     src/host/WallpaperHost.cpp
     src/host/DesktopDiag.cpp
     src/host/PauseMonitor.cpp
@@ -41,6 +39,22 @@ set(STALGIA_SOURCES
     src/host/Application.cpp
     resources/app.rc
 )
+
+# Extra effect sources live outside the repo. Off by default, so the public
+# build does not include them. The directory must define registerPrivateEffects.
+set(STALGIA_PRIVATE_EFFECTS_DIR "" CACHE PATH
+    "Directory of extra effect sources compiled into this build. Empty skips them.")
+if(STALGIA_PRIVATE_EFFECTS_DIR)
+    file(GLOB STALGIA_PRIVATE_SOURCES CONFIGURE_DEPENDS
+        "${STALGIA_PRIVATE_EFFECTS_DIR}/*.cpp"
+        "${STALGIA_PRIVATE_EFFECTS_DIR}/effects/*.cpp")
+    if(NOT STALGIA_PRIVATE_SOURCES)
+        message(FATAL_ERROR "STALGIA_PRIVATE_EFFECTS_DIR is set but contains no .cpp files: ${STALGIA_PRIVATE_EFFECTS_DIR}")
+    endif()
+    list(APPEND STALGIA_SOURCES ${STALGIA_PRIVATE_SOURCES})
+else()
+    list(APPEND STALGIA_SOURCES src/effect/PrivateEffects.cpp)
+endif()
 
 set(SEH_OBJ ${CMAKE_CURRENT_BINARY_DIR}/SehGuard.obj)
 if(MSVC)
@@ -64,6 +78,9 @@ endif()
 add_executable(Stalgia WIN32 ${STALGIA_SOURCES})
 
 target_include_directories(Stalgia PRIVATE src resources)
+if(STALGIA_PRIVATE_EFFECTS_DIR)
+    target_include_directories(Stalgia PRIVATE "${STALGIA_PRIVATE_EFFECTS_DIR}")
+endif()
 
 target_compile_definitions(Stalgia PRIVATE
     UNICODE

@@ -455,6 +455,172 @@ float4 PSAurora(VSOut i) : SV_Target {
     return float4(toLin(tonemap(col)), 1.0);
 }
 
+// Irregular pines on a ground line. fill > 0.5 also paints everything below the soil.
+float treeLine(float x, float y, float ground, float scale, float seed, float amp, float fill) {
+    float tx = x * scale;
+    float cov = 0.0;
+    if (fill > 0.5) {
+        cov = smoothstep(ground - 1.5 / max(height, 1.0), ground + 1.5 / max(height, 1.0), y);
+    }
+    float aa = (height / max(scale, 1.0)) * 0.55;
+    [unroll] for (int k = -1; k <= 1; k++) {
+        float cell = floor(tx) + float(k);
+        float fr = tx - cell;
+        [unroll] for (int ti = 0; ti < 2; ti++) {
+            float h = hash12(float2(cell, seed + float(ti) * 3.0));
+            float h2 = hash12(float2(cell, seed + 5.0 + float(ti)));
+            float present = (h > ((ti == 0) ? 0.05 : 0.42)) ? 1.0 : 0.0;
+            float center = lerp(0.12, 0.88, h);
+            if (ti == 1) center = frac(center + 0.41);
+            float treeH = amp * lerp(0.22, 1.0, h2);
+            float tt = (ground - y) / max(treeH, 0.001);
+            float dx = abs(fr - center);
+            float halfW = lerp(0.08, 0.34, h) * ((ti == 0) ? 1.0 : 0.55);
+            float shape = pow(saturate(1.0 - tt), 0.65);
+            float edge = saturate((halfW * shape - dx) * aa);
+            float on = (tt > 0.0 && tt < 1.0) ? present : 0.0;
+            cov = max(cov, edge * on);
+        }
+    }
+    return cov;
+}
+
+void addFlies(inout float3 col, float2 uv, float scale, float depth, float dens, float3 tint,
+              float spd, float parallaxX) {
+    float2 p = uv;
+    p.x += parallaxX + sin(time * spd * 0.20 + uv.y * 6.0) * 0.012 * depth;
+    p.y += time * spd * 0.015 * depth;
+    float2 q = p * float2(scale, scale * 0.72);
+    float2 cell = floor(q);
+    float2 f = frac(q) - 0.5;
+    float n = hash12(cell + float2(depth * 9.0, 1.7));
+    float keep = saturate(0.22 * dens);
+    if (n <= 1.0 - keep) return;
+    float2 j = hash22(cell);
+    float phase = n * 6.2831853;
+    float wob = sin(time * (0.25 + n * 0.35) * spd + phase);
+    float2 drift = float2(wob, cos(time * 0.18 * spd + phase)) * 0.22;
+    float2 d = f - ((j - 0.5) * 0.55 + drift);
+    float dist = length(d) * (height / scale);
+    float pulse = pow(saturate(sin(time * (0.45 + n * 0.25) + phase) * 0.5 + 0.5), 6.0);
+    float core = exp(-(dist * dist) / 1.6);
+    float bloom = exp(-(dist * dist) / (10.0 + 14.0 * depth));
+    float band = smoothstep(0.16, 0.40, uv.y);
+    col += tint * (core * 1.7 + bloom * 0.72) * pulse * lerp(0.45, 1.0, depth) * band;
+}
+
+void addSnow(inout float3 col, float2 uv, float scale, float depth, float dens, float wind, float spd,
+             float3 tint, float softness) {
+    float2 p = uv;
+    float sway = sin(time * 0.35 * spd + uv.y * 3.0 + depth * 2.2) * 0.02 * (0.25 + depth);
+    p.x += wind * time * spd * (0.02 + 0.06 * depth) + sway + lookX * depth * 0.22;
+    p.y += time * spd * (0.012 + 0.04 * depth);
+    float2 q = p * float2(scale, scale * 0.72) + float2(depth * 17.0, depth * 9.0);
+    float2 origin = floor(q);
+    float2 f = frac(q);
+    float keep = saturate(dens * lerp(0.09, 0.22, depth));
+    float rad = lerp(1.1, 18.0, depth) * softness;
+    // A large flake sits in one cell but its glow crosses into the next, so
+    // each pixel gathers the neighborhood or the bloom is cut into a square.
+    [unroll] for (int oy = -1; oy <= 1; oy++) {
+        [unroll] for (int ox = -1; ox <= 1; ox++) {
+            float2 cell = origin + float2(ox, oy);
+            float n = hash12(cell + float2(2.0, depth * 11.0));
+            if (n <= 1.0 - keep) continue;
+            float2 j = hash22(cell + float2(depth, 0.4));
+            float2 d = (f - float2(ox, oy)) - 0.5 - (j - 0.5) * 0.35;
+            float dist = length(d) * (height / scale);
+            float core = exp(-(dist * dist) / max(rad * rad * 0.28, 0.2));
+            float halo = exp(-(dist * dist) / max(rad * rad * 1.8, 0.8)) * lerp(0.0, 0.55, depth);
+            col += tint * (core * lerp(0.45, 1.15, depth) + halo);
+        }
+    }
+}
+
+float4 PSFireflies(VSOut i) : SV_Target {
+    float2 uv = i.uv;
+    float aspect = width / max(height, 1.0);
+    float woods = saturate(p2);
+    float stars = saturate(p1);
+    float mistAmt = saturate(p0);
+    float spd = max(speed, 0.05);
+
+    float3 zenith = lerp(float3(0.015, 0.020, 0.055), float3(0.004, 0.006, 0.016), woods);
+    float3 dusk = lerp(float3(0.16, 0.055, 0.045), float3(0.035, 0.020, 0.028), woods);
+    float3 horizon = lerp(float3(0.42, 0.18, 0.07), float3(0.08, 0.045, 0.03), woods);
+    float3 col = lerp(zenith, dusk, smoothstep(0.05, 0.48, uv.y));
+    col = lerp(col, horizon, smoothstep(0.42, 0.74, uv.y));
+    col += horizon * 0.15 * exp(-abs(uv.y - 0.70) / 0.08);
+
+    if (stars > 0.02 && uv.y < 0.64) {
+        float2 sp = float2((uv.x - 0.5) * aspect + lookX * 0.25, uv.y - 0.42);
+        starLayer(col, sp, 64.0, 0.85, 0.045 * stars, 0.35, 0.65, float3(0.86, 0.90, 1.0), 1.0);
+    }
+
+    float farC = treeLine(uv.x + lookX * 0.15, uv.y, 0.66, 4.6, 2.0, lerp(0.18, 0.36, woods), 0.0);
+    float midC = treeLine(uv.x + lookX * 0.45, uv.y, 0.80, 7.5, 6.5, lerp(0.12, 0.22, woods), 1.0);
+    float nearC = treeLine(uv.x + lookX * 0.90, uv.y, 0.92, 12.0, 11.0, lerp(0.08, 0.15, woods), 1.0);
+    float3 farCol = lerp(float3(0.035, 0.028, 0.032), float3(0.010, 0.012, 0.014), woods);
+    col = lerp(col, farCol, farC * 0.94);
+    col = lerp(col, float3(0.008, 0.009, 0.010), midC);
+    col = lerp(col, float3(0.0025, 0.0030, 0.0035), nearC);
+
+    float mistN = (quality > 0.5) ? fbm2(float2(uv.x * 2.2 + time * spd * 0.012, 0.35)) : 0.55;
+    float mist = smoothstep(0.64, 1.0, uv.y) * (0.50 + 0.50 * mistN);
+    col += float3(0.11, 0.12, 0.13) * mist * mistAmt * 0.50;
+
+    float3 tint = max(colorA.rgb, float3(0.02, 0.02, 0.02));
+    float flyDens = saturate(density);
+    if (quality > 0.5) addFlies(col, uv, 22.0, 0.42, flyDens, tint * 0.75, spd, lookX * 0.35);
+    addFlies(col, uv, 10.0, 1.0, flyDens, tint, spd, lookX * 1.05);
+    return float4(toLin(tonemap(col)), 1.0);
+}
+
+float4 PSSnow(VSOut i) : SV_Target {
+    float2 uv = i.uv;
+    float aspect = width / max(height, 1.0);
+    float wind = p0;
+    float backdrop = p1;
+    float spd = max(speed, 0.05);
+    float3 col = lerp(float3(0.012, 0.016, 0.040), float3(0.028, 0.032, 0.055), smoothstep(0.0, 1.0, uv.y));
+
+    if (backdrop < 0.5) {
+        if (quality > 0.5 && uv.y < 0.72) {
+            float2 sp = float2((uv.x - 0.5) * aspect, uv.y - 0.45);
+            starLayer(col, sp, 58.0, 0.9, 0.06, 0.25, 0.55, float3(0.90, 0.93, 1.0), 1.0);
+        }
+    } else if (backdrop < 1.5) {
+        if (quality > 0.5 && uv.y < 0.55) {
+            float2 sp = float2((uv.x - 0.5) * aspect, uv.y - 0.40);
+            starLayer(col, sp, 70.0, 0.7, 0.03, 0.2, 0.4, float3(0.85, 0.90, 1.0), 1.0);
+        }
+        float farC = treeLine(uv.x + lookX * 0.12, uv.y, 0.64, 5.2, 3.0, 0.28, 0.0);
+        float nearC = treeLine(uv.x + lookX * 0.55, uv.y, 0.82, 9.0, 9.0, 0.18, 1.0);
+        col = lerp(col, float3(0.012, 0.016, 0.018), farC);
+        col = lerp(col, float3(0.003, 0.004, 0.005), nearC);
+        float snowGround = smoothstep(0.78, 0.95, uv.y);
+        col = lerp(col, float3(0.045, 0.050, 0.058), snowGround * (1.0 - nearC));
+    } else {
+        col = float3(0.015, 0.008, 0.005);
+        float2 c1 = uv - float2(0.36, 0.46);
+        float2 c2 = uv - float2(0.66, 0.58);
+        float b1 = exp(-dot(c1, c1) / 0.010);
+        float b2 = exp(-dot(c2, c2) / 0.006);
+        col += float3(0.95, 0.48, 0.16) * b1 * 0.85;
+        col += float3(1.0, 0.72, 0.38) * b2 * 0.55;
+        float frame = smoothstep(0.0, 0.07, uv.x) * smoothstep(1.0, 0.93, uv.x);
+        frame *= smoothstep(0.0, 0.08, uv.y) * smoothstep(1.0, 0.90, uv.y);
+        col *= lerp(0.05, 1.0, frame);
+    }
+
+    float3 tint = max(colorA.rgb, float3(0.2, 0.2, 0.2));
+    float dens = max(density, 0.05);
+    addSnow(col, uv, 36.0, 0.12, dens, wind, spd, tint, 0.70);
+    addSnow(col, uv, 18.0, 0.48, dens, wind, spd, tint, 1.0);
+    addSnow(col, uv, 7.0, 1.0, dens, wind, spd, tint, 1.15);
+    return float4(toLin(tonemap(col)), 1.0);
+}
+
 float4 PSFallback(VSOut i) : SV_Target {
     float3 c = lerp(float3(0.02, 0.025, 0.04), float3(0.045, 0.05, 0.07), i.uv.y);
     return float4(pow(c, 2.2), 1.0);

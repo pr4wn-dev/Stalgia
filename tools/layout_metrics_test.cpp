@@ -32,12 +32,12 @@ static void placeChips(const wchar_t** labels, int n, float contentW, std::vecto
 int main() {
     const float widgetPanel = 360.0f - ui::kPad * 2.0f;
     const float widgetContent = ui::contentWidth(widgetPanel);
-    const wchar_t* myco[] = {L"Classic", L"Mono", L"Slow bloom", L"Night", L"Reset"};
+    const wchar_t* night[] = {L"Summer dusk", L"Deep woods", L"Meadow", L"Night sky", L"Reset"};
     std::vector<ui::R> chips;
-    placeChips(myco, 5, widgetContent, chips);
+    placeChips(night, 5, widgetContent, chips);
     ui::R content{0, 0, widgetContent, 400};
     ui::R gutter{widgetContent, 0, ui::kGutter, 400};
-    expect(ui::audit(chips.data(), (int)chips.size(), content, gutter) == nullptr, "myco chips");
+    expect(ui::audit(chips.data(), (int)chips.size(), content, gutter) == nullptr, "night chips");
     expect(chips.size() == 5, "five chips");
     expect(chips.back().y > chips.front().y, "Reset wrapped off the first line");
     for (const auto& c : chips) expect(c.x + c.w <= widgetContent + 0.5f, "chip inside content");

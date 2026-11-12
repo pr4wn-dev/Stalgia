@@ -512,8 +512,9 @@ void SettingsPanel::updateValueLabels() {
         put(m_valDensity, 1);
         put(m_valGlyph, 4);
         put(m_valTrail, 5);
-    } else if (id == "starfield") {
+    } else if (id == "starfield" || id == "fireflies" || id == "snow") {
         put(m_valDensity, 1);
+        if (id == "snow") put(m_valExtra1, 2);
     }
     std::swprintf(buf, 32, L"%d", trackPos(m_slFps));
     setText(m_valFps, buf);
@@ -561,6 +562,8 @@ void SettingsPanel::syncToUi() {
     const bool ape = s.effect == "ape";
     const bool myco = s.effect == "myco";
     const bool reveal = ape || myco;
+    const bool fire = s.effect == "fireflies";
+    const bool snow = s.effect == "snow";
 
     ShowWindow(m_lblGlyph, (matrix || lava || reveal) ? SW_SHOW : SW_HIDE);
     ShowWindow(m_slGlyph, (matrix || lava || reveal) ? SW_SHOW : SW_HIDE);
@@ -568,15 +571,15 @@ void SettingsPanel::syncToUi() {
     ShowWindow(m_lblTrail, (matrix || lava || reveal) ? SW_SHOW : SW_HIDE);
     ShowWindow(m_slTrail, (matrix || lava || reveal) ? SW_SHOW : SW_HIDE);
     ShowWindow(m_valTrail, (matrix || lava || reveal) ? SW_SHOW : SW_HIDE);
-    ShowWindow(m_lblDensity, (matrix || star || lava || reveal) ? SW_SHOW : SW_HIDE);
-    ShowWindow(m_slDensity, (matrix || star || lava || reveal) ? SW_SHOW : SW_HIDE);
-    ShowWindow(m_valDensity, (matrix || star || lava || reveal) ? SW_SHOW : SW_HIDE);
+    ShowWindow(m_lblDensity, (matrix || star || lava || reveal || fire || snow) ? SW_SHOW : SW_HIDE);
+    ShowWindow(m_slDensity, (matrix || star || lava || reveal || fire || snow) ? SW_SHOW : SW_HIDE);
+    ShowWindow(m_valDensity, (matrix || star || lava || reveal || fire || snow) ? SW_SHOW : SW_HIDE);
     ShowWindow(m_lblColorB, (matrix || aurora || lava) ? SW_SHOW : SW_HIDE);
     ShowWindow(m_btnColorB, (matrix || aurora || lava) ? SW_SHOW : SW_HIDE);
     ShowWindow(m_swatchB, (matrix || aurora || lava) ? SW_SHOW : SW_HIDE);
-    ShowWindow(m_lblExtra1, reveal ? SW_SHOW : SW_HIDE);
-    ShowWindow(m_slExtra1, reveal ? SW_SHOW : SW_HIDE);
-    ShowWindow(m_valExtra1, reveal ? SW_SHOW : SW_HIDE);
+    ShowWindow(m_lblExtra1, (reveal || snow) ? SW_SHOW : SW_HIDE);
+    ShowWindow(m_slExtra1, (reveal || snow) ? SW_SHOW : SW_HIDE);
+    ShowWindow(m_valExtra1, (reveal || snow) ? SW_SHOW : SW_HIDE);
     ShowWindow(m_lblExtra2, reveal ? SW_SHOW : SW_HIDE);
     ShowWindow(m_slExtra2, reveal ? SW_SHOW : SW_HIDE);
     ShowWindow(m_valExtra2, reveal ? SW_SHOW : SW_HIDE);
@@ -586,16 +589,19 @@ void SettingsPanel::syncToUi() {
     setText(m_lblColorA, lava ? L"Lava color" : reveal ? L"Code color" : L"Color");
     setText(m_lblColorB, matrix ? L"Head color" : lava ? L"Liquid tint" : L"Second color");
     setText(m_lblDensity, lava ? L"Blobs" : reveal ? L"Rain density" : L"Density");
+    setText(m_lblExtra1, snow ? L"Wind" : ape ? L"Ape size" : myco ? L"Size" : L"Ape size");
     setText(m_lblGlyph, lava ? L"Glow" : L"Glyph size");
     setText(m_lblTrail, lava ? L"Blob size" : reveal ? L"Brightness" : L"Trail length");
-    setText(m_lblExtra1, ape ? L"Ape size" : myco ? L"Size" : L"Ape size");
     setText(m_lblExtra2, ape ? L"Ape position" : myco ? L"Position" : L"Ape position");
     setText(m_grpFx, matrix   ? L"Matrix settings"
                      : star   ? L"Starfield settings"
                      : aurora ? L"Aurora settings"
                      : lava   ? L"Lava lamp settings"
                      : myco   ? L"Slow Myco settings"
-                              : L"Code Ape settings");
+                     : ape    ? L"Code Ape settings"
+                     : fire   ? L"Fireflies settings"
+                     : snow   ? L"Snowfall settings"
+                              : L"Wallpaper settings");
 
     auto bind = [&](HWND sl, int index, bool integer) {
         float lo = 0, hi = 1;
@@ -627,9 +633,13 @@ void SettingsPanel::syncToUi() {
         bind(m_slDensity, 1, false);
         bind(m_slGlyph, 4, true);
         bind(m_slTrail, 5, false);
-    } else if (star) {
+    } else if (star || fire) {
         bind(m_slSpeed, 0, false);
         bind(m_slDensity, 1, false);
+    } else if (snow) {
+        bind(m_slSpeed, 0, false);
+        bind(m_slDensity, 1, false);
+        bind(m_slExtra1, 2, false);
     } else {
         bind(m_slSpeed, 0, false);
     }
@@ -659,6 +669,13 @@ void SettingsPanel::applyFromUi() {
         writeSlider(s, id, m_slDensity, 1);
     } else if (id == "aurora") {
         writeSlider(s, id, m_slSpeed, 0);
+    } else if (id == "fireflies") {
+        writeSlider(s, id, m_slSpeed, 0);
+        writeSlider(s, id, m_slDensity, 1);
+    } else if (id == "snow") {
+        writeSlider(s, id, m_slSpeed, 0);
+        writeSlider(s, id, m_slDensity, 1);
+        writeSlider(s, id, m_slExtra1, 2);
     } else if (id == "lava") {
         writeSlider(s, id, m_slSpeed, 0);
         writeSlider(s, id, m_slDensity, 1);
@@ -700,6 +717,8 @@ void SettingsPanel::pickColor(int which) {
         else if (s.effect == "lava") target = &s.lava.lavaColor;
         else if (s.effect == "ape") target = &s.ape.color;
         else if (s.effect == "myco") target = &s.myco.color;
+        else if (s.effect == "fireflies") target = &s.fireflies.color;
+        else if (s.effect == "snow") target = &s.snow.color;
         else target = &s.aurora.colorA;
     } else {
         if (s.effect == "matrix") target = &s.matrix.headColor;
@@ -808,6 +827,8 @@ LRESULT SettingsPanel::handle(UINT msg, WPARAM wParam, LPARAM lParam) {
                     else if (s.effect == "lava") rgb = s.lava.lavaColor;
                     else if (s.effect == "ape") rgb = s.ape.color;
                     else if (s.effect == "myco") rgb = s.myco.color;
+                    else if (s.effect == "fireflies") rgb = s.fireflies.color;
+                    else if (s.effect == "snow") rgb = s.snow.color;
                     else rgb = s.aurora.colorA;
                 } else {
                     if (s.effect == "matrix") rgb = s.matrix.headColor;

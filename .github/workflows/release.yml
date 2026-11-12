@@ -54,11 +54,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cat > release-notes.md <<EOF
-          Stalgia is a lightweight animated desktop wallpaper for Windows 10 and 11. One portable 64-bit executable draws behind the desktop icons with Direct3D 11.
+          Lightweight animated desktop wallpapers and a desktop widget for Windows 10 and 11, drawn behind your icons by one portable Direct3D 11 executable.
 
           Highlights:
-          - Matrix, Code Ape, and Slow Myco
-          - Stars, Aurora, and Lava
+          - Matrix, Stars, Aurora, and Lava
+          - Fireflies and Snow
           - Desktop widget with a live preview, wallpaper picker, and system strip
           - Gallery, tray icon, and control panel
 

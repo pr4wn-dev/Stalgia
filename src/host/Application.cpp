@@ -86,6 +86,10 @@ bool Application::initialize(HINSTANCE instance, HostMode mode, bool openPanelOn
             LOG_WARN("Unknown wallpaper '%s'", effectOverride.c_str());
         }
     }
+    if (!m_registry.contains(m_config.settings().effect)) {
+        LOG_WARN("Effect '%s' is not in this build; using matrix", m_config.settings().effect.c_str());
+        m_config.settings().effect = "matrix";
+    }
     if (hideIconsCli >= 0) {
         m_config.settings().hideDesktopIcons = hideIconsCli != 0;
         LOG_INFO("CLI --icons %s", hideIconsCli ? "hide" : "show");
@@ -741,7 +745,8 @@ void Application::renderFrame(float dt, double time) {
     m_renderer.beginGpuTime();
     const char* eid = m_effect->id();
     const bool perMonitor = eid && (std::strcmp(eid, "starfield") == 0 || std::strcmp(eid, "aurora") == 0 ||
-                                    std::strcmp(eid, "lava") == 0);
+                                    std::strcmp(eid, "lava") == 0 || std::strcmp(eid, "fireflies") == 0 ||
+                                    std::strcmp(eid, "snow") == 0);
     struct Mon {
         int x, y, w, h;
     };
@@ -1375,6 +1380,26 @@ void Application::tickSelftest() {
                 m_stReport += "SkyPresets: PASS aurora=4 starfield=4\n";
             }
         }
+        {
+            const bool names = std::string(presetName("fireflies", 0)) == "Summer dusk" &&
+                               std::string(presetName("fireflies", 1)) == "Deep woods" &&
+                               std::string(presetName("fireflies", 2)) == "Meadow" &&
+                               presetCount("fireflies") == 3 &&
+                               std::string(presetName("snow", 0)) == "Night sky" &&
+                               std::string(presetName("snow", 1)) == "Pine forest" &&
+                               std::string(presetName("snow", 2)) == "Window" && presetCount("snow") == 3;
+            AppSettings probe;
+            applyPreset(probe, "fireflies", 1);
+            const bool woods = probe.fireflies.woods > 0.8f && probe.fireflies.stars < 0.05f;
+            applyPreset(probe, "snow", 2);
+            const bool window = probe.snow.backdrop == 2 && probe.snow.wind < 0.2f;
+            if (!names || !woods || !window) {
+                m_stReport += "NightPresets: FAIL\n";
+                m_stFail = true;
+            } else {
+                m_stReport += "NightPresets: PASS fireflies=3 snow=3\n";
+            }
+        }
         m_gallery.hide();
         if (pending || !failedIds.empty() || ready != (int)list.size()) {
             std::snprintf(line, sizeof(line), "Gallery: FAIL thumbnails=%d/%d failed=%s\n", ready,
@@ -1440,11 +1465,23 @@ void Application::tickSelftest() {
             edge = m_renderer.sampleBandEdge();
             edgeOk = edge <= 0.25f;
         }
-        const bool pass = gained >= 2 && shaderReady && content && edgeOk && m_stSwitchMs <= 250.0;
+        float cover = 0.0f;
+        bool coverOk = true;
+        if (id == "fireflies" || id == "snow") {
+            const int pixels = std::max(1, m_renderer.width() * m_renderer.height());
+            cover = (float)lit / (float)pixels;
+            // Glows and flakes should cover part of the frame, not a flat field or noise.
+            coverOk = cover >= 0.002f && cover <= 0.40f;
+        }
+        const bool pass = gained >= 2 && shaderReady && content && edgeOk && coverOk && m_stSwitchMs <= 250.0;
         if (id == "starfield") {
             std::snprintf(line, sizeof(line),
                           "Preset %s/%s: %s presents=%d switch=%.0fms gpu=%s luma=%.4f lit=%d edge=%.3f\n", id.c_str(),
                           pname, pass ? "PASS" : "FAIL", gained, m_stSwitchMs, gpuBuf, luma, lit, edge);
+        } else if (id == "fireflies" || id == "snow") {
+            std::snprintf(line, sizeof(line),
+                          "Preset %s/%s: %s presents=%d switch=%.0fms gpu=%s luma=%.4f lit=%d cover=%.4f\n", id.c_str(),
+                          pname, pass ? "PASS" : "FAIL", gained, m_stSwitchMs, gpuBuf, luma, lit, cover);
         } else {
             std::snprintf(line, sizeof(line),
                           "Preset %s/%s: %s presents=%d switch=%.0fms gpu=%s luma=%.4f lit=%d\n", id.c_str(), pname,
@@ -1504,7 +1541,7 @@ void Application::advanceSelftestPreset(const std::vector<EffectInfo>& list) {
 
 void Application::warmSkyShaders() {
     if (!m_renderer.device()) return;
-    const char* ids[] = {"starfield", "aurora"};
+    const char* ids[] = {"starfield", "aurora", "fireflies", "snow"};
     for (const char* id : ids) {
         if (m_effect && std::strcmp(m_effect->id(), id) == 0) {
             m_effect->precompile(&m_renderer);

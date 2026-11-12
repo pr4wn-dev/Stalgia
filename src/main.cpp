@@ -44,11 +44,11 @@ void initLogging() {
 
 void printHelp() {
     const char* text =
-        "Stalgia — lightweight animated wallpaper for Windows 10/11\n"
+        "Stalgia — Lightweight animated desktop wallpapers and a desktop widget for Windows 10 and 11, drawn behind your icons by one portable Direct3D 11 executable.\n"
         "\n"
         "Usage: Stalgia.exe [options]\n"
         "  --window, -w              Open a preview window instead of the desktop background\n"
-        "  --wallpaper NAME          Start with this wallpaper (matrix, starfield, aurora, lava, ape, myco).\n"
+        "  --wallpaper NAME          Start with this wallpaper (matrix, starfield, aurora, lava, fireflies, snow).\n"
         "                            If Stalgia is already running, that instance switches to NAME.\n"
         "  --panel                   Open the control panel (or the running instance's panel)\n"
         "  --widget                  Show the desktop widget (or the running instance's widget)\n"
@@ -63,7 +63,7 @@ void printHelp() {
         "  --console                 Attach a console for log output\n"
         "  --help, -h                Show this help\n"
         "\n"
-        "Example: Stalgia.exe --window --wallpaper ape\n"
+        "Example: Stalgia.exe --window --wallpaper fireflies\n"
         "The desktop widget is shown by default. Use --panel for the full control panel.\n"
         "Logs: %APPDATA%\\Stalgia\\stalgia.log\n"
         "To stop a running instance from a script:  Stalgia.exe --exit\n"

@@ -193,6 +193,29 @@ void drawPreview(ID2D1RenderTarget* rt, Solid& solid, const AppSettings& s, floa
                 prev = Point2F(xx, yp);
             }
         }
+    } else if (fx == "fireflies") {
+        fillRound(rt, solid.get(rt, rgba4(0.03f, 0.02f, 0.05f, 0.95f)), x, y, w, h, 12.0f);
+        rt->FillRectangle(RectF(x, y + h * 0.62f, x + w, y + h), solid.get(rt, rgba4(0.01f, 0.012f, 0.014f, 0.9f)));
+        for (int i = 0; i < 7; ++i) {
+            const float px = x + w * (0.15f + (i % 5) * 0.15f);
+            const float py = y + h * (0.35f + (i % 3) * 0.16f + 0.04f * std::sin(time + i));
+            const float a = 0.35f + (i % 3) * 0.2f;
+            rt->FillEllipse(D2D1::Ellipse(Point2F(px, py), 3.5f, 3.5f), solid.get(rt, rgba(s.fireflies.color, a * 0.45f)));
+            rt->FillEllipse(D2D1::Ellipse(Point2F(px, py), 1.3f, 1.3f), solid.get(rt, rgba(s.fireflies.color, a)));
+        }
+    } else if (fx == "snow") {
+        const bool window = s.snow.backdrop == 2;
+        fillRound(rt, solid.get(rt, window ? rgba4(0.25f, 0.12f, 0.05f, 0.95f) : rgba4(0.02f, 0.03f, 0.06f, 0.95f)),
+                  x, y, w, h, 12.0f);
+        if (s.snow.backdrop == 1) {
+            rt->FillRectangle(RectF(x, y + h * 0.55f, x + w, y + h), solid.get(rt, rgba4(0.01f, 0.015f, 0.018f, 0.95f)));
+        }
+        for (int i = 0; i < 18; ++i) {
+            const float px = x + std::fmod(i * 37.0f + time * (8.0f + (i % 4) * 3.0f), w);
+            const float py = y + std::fmod(i * 19.0f + time * 14.0f, h);
+            const float rad = (i % 5 == 0) ? 3.2f : 1.2f;
+            rt->FillEllipse(D2D1::Ellipse(Point2F(px, py), rad, rad), solid.get(rt, rgba(s.snow.color, 0.75f)));
+        }
     } else if (fx == "lava") {
         fillRound(rt, solid.get(rt, rgba(s.lava.liquidColor, 0.95f)), x, y, w, h, 12.0f);
         const uint32_t lc = s.lava.lavaColor;
@@ -962,6 +985,8 @@ uint32_t DesktopWidget::accentRgb() const {
     if (id == "starfield") return m_host->settings().starfield.color;
     if (id == "aurora") return m_host->settings().aurora.colorA;
     if (id == "lava") return m_host->settings().lava.lavaColor;
+    if (id == "fireflies") return m_host->settings().fireflies.color;
+    if (id == "snow") return m_host->settings().snow.color;
     if (id == "ape") return 0xF2F6FF;
     if (id == "myco") return 0xD4787A;
     return m_host->settings().matrix.color;

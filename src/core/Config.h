@@ -73,6 +73,34 @@ struct LavaSettings {
     EffectLook look;
 };
 
+struct FireflySettings {
+    uint32_t color = 0xD2F26A;
+    float speed = 0.32f;
+    float density = 1.0f;
+    float mist = 0.55f;
+    float stars = 0.35f;
+    float woods = 0.45f;
+    EffectLook look;
+    FireflySettings() {
+        look.fpsCap = 30;
+        look.vignette = 0.28f;
+        look.saturation = 1.05f;
+    }
+};
+
+struct SnowSettings {
+    uint32_t color = 0xF7F8FF;
+    float speed = 0.40f;
+    float density = 1.0f;
+    float wind = 0.22f;
+    int backdrop = 0;  // 0 night sky, 1 pine forest, 2 window
+    EffectLook look;
+    SnowSettings() {
+        look.fpsCap = 30;
+        look.vignette = 0.22f;
+    }
+};
+
 struct ApeSettings {
     uint32_t color = 0xF2F6FF;
     float bgDim = 1.00f;
@@ -129,12 +157,16 @@ struct AppSettings {
     int tuneLava = 0;
     int tuneApe = 0;
     int tuneMyco = 0;
+    int tuneFireflies = 0;
+    int tuneSnow = 0;
     MatrixSettings matrix;
     StarfieldSettings starfield;
     AuroraSettings aurora;
     LavaSettings lava;
     ApeSettings ape;
     MycoSettings myco;
+    FireflySettings fireflies;
+    SnowSettings snow;
 };
 
 class Config {
@@ -151,6 +183,8 @@ public:
     static constexpr int kTuneLava = 2;        // 1.9.0 lamp, viscosity, heat
     static constexpr int kTuneApe = 3;         // 1.9.0 reveal, detail, custom image
     static constexpr int kTuneMyco = 3;
+    static constexpr int kTuneFireflies = 1;   // 1.11.0 dusk forest
+    static constexpr int kTuneSnow = 1;        // 1.11.0 layered snowfall
 
     bool load();
     bool save() const;

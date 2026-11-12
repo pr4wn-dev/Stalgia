@@ -1,6 +1,6 @@
 # Stalgia
 
-Lightweight animated desktop wallpapers for Windows 10 and 11. One portable 64-bit exe draws behind your icons with Direct3D 11: Matrix rain, Code Ape, Slow Myco, Stars, Aurora, and Lava, plus a desktop widget and a gallery.
+Lightweight animated desktop wallpapers and a desktop widget for Windows 10 and 11, drawn behind your icons by one portable Direct3D 11 executable. Matrix rain, Stars, Aurora, Lava, Fireflies, and Snow.
 
 ![Stars](docs/stars.png)
 
@@ -8,16 +8,20 @@ Lightweight animated desktop wallpapers for Windows 10 and 11. One portable 64-b
 
 ![Lava lamp](docs/lava.png)
 
+![Fireflies](docs/fireflies.png)
+
+![Snow](docs/snow.png)
+
 Stills above are from the CPU reference renderer (`tools/render_sky.py` and `tools/render_lava_preview.py`), not screenshots of a desktop.
 
 ## Features
 
 - **Matrix** — falling katakana, instanced on the GPU.
-- **Code Ape** — the same rain, brighter where a knuckle-walking silverback sits. The silhouette is a baked luminance mask, not a pasted photo.
-- **Slow Myco** — rain that reveals a mushroom turtle. Color mode tints the rain from a baked palette (cap, spots, stem, shell, legs).
 - **Stars** — a dark sky, crisp stars, and a Milky Way. Still night, Milky Way, and Nebula stay at 30 fps. Warp follows the global cap.
 - **Aurora** — one folded ribbon with a green hem and magenta rays, and an optional ridgeline with a reflection.
 - **Lava** — opaque wax inside the lamp. Blobs pinch off the bottom pool and drift up. Default is 30 fps.
+- **Fireflies** — a dusk forest. Layered treelines drift with a little parallax, fireflies blink with a warm yellow-green bloom, and a faint mist sits on the ground. Summer dusk, Deep woods, and Meadow. An optional starry sky sits above the trees. Default is 30 fps.
+- **Snow** — flakes in depth: big soft ones near the camera, small sharp ones far away, with a slow drift, a slight sway, and optional wind. Backdrops are Night sky, Pine forest, and Window. Default is 30 fps.
 - **Widget** — a frameless card on the desktop: live preview, wallpaper picker, play/pause, FPS, hide-icons, presets, and a System strip (CPU, RAM, GPU, disk, network). It collapses to a small pill. It is a top-level window, not a child of Explorer.
 - **Gallery** — groups, live cards, favorites, and the same knobs as the widget.
 - **Tray and control panel** — show or hide the wallpaper, pause, pick an effect, open the config, or exit. Closing the panel leaves the wallpaper running.
@@ -43,7 +47,7 @@ That copies the exe to `%LOCALAPPDATA%\Programs\Stalgia\Stalgia.exe`, writes a d
 Preview in a window without touching the desktop:
 
 ```text
-Stalgia.exe --window --wallpaper myco
+Stalgia.exe --window --wallpaper fireflies
 ```
 
 ### Unsigned builds
@@ -79,7 +83,7 @@ Settings, logs, and crash reports stay on the local PC under `%APPDATA%\Stalgia`
 | Option | Meaning |
 | --- | --- |
 | `--window`, `-w` | Preview window. Does not attach to the desktop. |
-| `--wallpaper NAME`, `--effect NAME` | Start with `matrix`, `starfield`, `aurora`, `lava`, `ape`, or `myco`. A running instance switches to that wallpaper. |
+| `--wallpaper NAME`, `--effect NAME` | Start with `matrix`, `starfield`, `aurora`, `lava`, `fireflies`, or `snow`. A running instance switches to that wallpaper. |
 | `--panel` | Open the control panel. A running instance opens its own panel. |
 | `--widget` | Show the desktop widget. |
 | `--hide-widget` | Hide the desktop widget on a running instance. |
@@ -127,6 +131,8 @@ cmake --build build-mingw -j
 
 The toolchain file selects the win32-thread compilers (`x86_64-w64-mingw32-g++-win32`). The link line is `-static -static-libgcc -static-libstdc++ -municode -mwindows`, so the result is one portable exe: `build-mingw/Stalgia.exe`. Clang compiles `src/host/SehGuard.c` because MinGW g++ has no `__try`.
 
+Optional effects that are not in this repository can be compiled in with `-DSTALGIA_PRIVATE_EFFECTS_DIR=/absolute/path/outside/the/repo`. The directory supplies extra `.cpp` files and a `registerPrivateEffects` function. Leave it unset for the public build. A saved `effect` id that this build does not contain falls back to Matrix.
+
 ### MSVC
 
 ```powershell
@@ -140,6 +146,4 @@ The exe is `build\Release\Stalgia.exe`. Release uses the static CRT (`/MT`).
 
 Stalgia is free software under the GNU General Public License v3.0 only. See [LICENSE](LICENSE). The version resource reports `LegalCopyright` as `GPL-3.0`.
 
-No third-party source is vendored. The exe links only to Windows system libraries (Direct3D 11, DXGI, Direct2D, DirectWrite, DirectComposition, the shell, GDI, PDH, and the rest). Matrix glyphs are drawn with a font already installed on the PC. The app icon (`resources/app.ico`, `resources/stalgia-256.png`) is the project’s own art.
-
-Code Ape and Slow Myco ship as generated mask tables in `src/effects/ApeMaskData.cpp` and `src/effects/MycoMaskData.cpp`. The reference photographs those masks were baked from are not included. `tools/gen_ape_mask.py` and `tools/gen_myco_mask.py` can rebuild the tables if you supply your own images. Matrix rain is an homage to a film look, not an official product.
+No third-party source is vendored. The exe links only to Windows system libraries (Direct3D 11, DXGI, Direct2D, DirectWrite, DirectComposition, the shell, GDI, PDH, and the rest). Matrix glyphs are drawn with a font already installed on the PC. The app icon (`resources/app.ico`, `resources/stalgia-256.png`) is the project’s own art. Matrix rain is an homage to a film look, not an official product.

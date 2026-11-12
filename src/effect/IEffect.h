@@ -25,6 +25,7 @@ struct FrameContext {
 // One animated wallpaper. To add a new effect:
 //   1. Create src/effects/YourEffect.h/.cpp implementing IEffect.
 //   2. Register it in EffectRegistry::EffectRegistry() with add("id", "Menu Name", factory).
+//      Sources outside the repo use addExternal from STALGIA_PRIVATE_EFFECTS_DIR.
 //   3. That's it — the tray Wallpaper menu and config "effect" key pick it up.
 class IEffect {
 public:

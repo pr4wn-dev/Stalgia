@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU reference for the Aurora and Stars wallpapers.
+"""CPU reference for the Aurora, Stars, Fireflies, and Snow wallpapers.
 
 Matches PSAurora / PSStarfield. Noise is the same 256^2 R8 lattice the GPU
 samples with one Hermite-adjusted bilinear fetch. The grade pass saturates
@@ -587,6 +587,198 @@ def render_aurora(w, h, preset, time):
     return np.clip(enc * 255.0 + 0.5, 0, 255).astype(np.uint8).transpose(1, 2, 0)
 
 
+def tree_line(x, y, ground, scale, seed, amp, height, fill):
+    tx = x * scale
+    if fill > 0.5:
+        aa = 1.5 / max(height, 1.0)
+        cov = smoothstep(ground - aa, ground + aa, y)
+    else:
+        cov = np.zeros_like(x)
+    edge_k = (height / max(scale, 1.0)) * 0.55
+    for k in (-1.0, 0.0, 1.0):
+        cell = np.floor(tx) + k
+        fr = tx - cell
+        for ti in (0.0, 1.0):
+            hsh = hash12(cell, np.full_like(cell, seed + ti * 3.0))
+            h2 = hash12(cell, np.full_like(cell, seed + 5.0 + ti))
+            present = (hsh > (0.05 if ti == 0.0 else 0.42)).astype(np.float32)
+            center = lerp(0.12, 0.88, hsh)
+            if ti == 1.0:
+                center = frac(center + 0.41)
+            tree_h = amp * lerp(0.22, 1.0, h2)
+            tt = (ground - y) / np.maximum(tree_h, 0.001)
+            dx = np.abs(fr - center)
+            half_w = lerp(0.08, 0.34, hsh) * (1.0 if ti == 0.0 else 0.55)
+            shape = np.power(saturate(1.0 - tt), 0.65)
+            edge = saturate((half_w * shape - dx) * edge_k)
+            on = ((tt > 0.0) & (tt < 1.0)).astype(np.float32) * present
+            cov = np.maximum(cov, edge * on)
+    return cov
+
+
+def add_flies(col, uv, scale, depth, dens, tint, time, speed, parallax_x, height):
+    px = uv[0] + parallax_x + np.sin(time * speed * 0.20 + uv[1] * 6.0) * 0.012 * depth
+    py = uv[1] + time * speed * 0.015 * depth
+    qx = px * scale
+    qy = py * scale * 0.72
+    cx = np.floor(qx)
+    cy = np.floor(qy)
+    fx = (qx - cx) - 0.5
+    fy = (qy - cy) - 0.5
+    n = hash12(cx + depth * 9.0, cy + 1.7)
+    keep = float(np.clip(0.22 * dens, 0.0, 1.0))
+    alive = n > (1.0 - keep)
+    jx, jy = hash22(cx, cy)
+    phase = n * 6.2831853
+    wob = np.sin(time * (0.25 + n * 0.35) * speed + phase)
+    dx = fx - ((jx - 0.5) * 0.55 + wob * 0.22)
+    dy = fy - ((jy - 0.5) * 0.55 + np.cos(time * 0.18 * speed + phase) * 0.22)
+    dist = np.sqrt(dx * dx + dy * dy) * (height / scale)
+    pulse = np.power(saturate(np.sin(time * (0.45 + n * 0.25) + phase) * 0.5 + 0.5), 6.0)
+    core = np.exp(-(dist * dist) / 1.6)
+    bloom = np.exp(-(dist * dist) / (10.0 + 14.0 * depth))
+    band = smoothstep(0.16, 0.40, uv[1])
+    shade = np.where(alive, (core * 1.7 + bloom * 0.72) * pulse * lerp(0.45, 1.0, depth) * band, 0.0)
+    tint = np.asarray(tint, dtype=np.float32)
+    for c in range(3):
+        col[c] += tint[c] * shade
+
+
+def add_snow(col, uv, scale, depth, dens, wind, time, speed, tint, softness, height, look_x):
+    sway = np.sin(time * 0.35 * speed + uv[1] * 3.0 + depth * 2.2) * 0.02 * (0.25 + depth)
+    px = uv[0] + wind * time * speed * (0.02 + 0.06 * depth) + sway + look_x * depth * 0.22
+    py = uv[1] + time * speed * (0.012 + 0.04 * depth)
+    qx = px * scale + depth * 17.0
+    qy = py * scale * 0.72 + depth * 9.0
+    ox = np.floor(qx)
+    oy = np.floor(qy)
+    fx = qx - ox
+    fy = qy - oy
+    keep = float(np.clip(dens * lerp(0.09, 0.22, depth), 0.0, 1.0))
+    rad = lerp(1.1, 18.0, depth) * softness
+    shade = np.zeros_like(qx)
+    for jy in (-1.0, 0.0, 1.0):
+        for jx in (-1.0, 0.0, 1.0):
+            cx = ox + jx
+            cy = oy + jy
+            n = hash12(cx + 2.0, cy + depth * 11.0)
+            alive = n > (1.0 - keep)
+            hx, hy = hash22(cx + depth, cy + 0.4)
+            dx = (fx - jx) - 0.5 - (hx - 0.5) * 0.35
+            dy = (fy - jy) - 0.5 - (hy - 0.5) * 0.35
+            dist = np.sqrt(dx * dx + dy * dy) * (height / scale)
+            core = np.exp(-(dist * dist) / np.maximum(rad * rad * 0.28, 0.2))
+            halo = np.exp(-(dist * dist) / np.maximum(rad * rad * 1.8, 0.8)) * lerp(0.0, 0.55, depth)
+            shade += np.where(alive, core * lerp(0.45, 1.15, depth) + halo, 0.0)
+    tint = np.asarray(tint, dtype=np.float32)
+    for c in range(3):
+        col[c] += tint[c] * shade
+
+
+def scene_stats(col):
+    lin = np.power(np.clip(1.0 - np.exp(-1.1 * np.maximum(col, 0.0)), 0.0, 1.0), 2.2)
+    luma = lin[0] * 0.2126 + lin[1] * 0.7152 + lin[2] * 0.0722
+    lit = int(np.count_nonzero(luma >= 0.02))
+    cover = lit / float(luma.size)
+    return float(luma.max()), lit, cover
+
+
+def render_fireflies(w, h, preset, time):
+    speed, density, mist, stars, woods, color, look = preset
+    ys, xs = np.indices((h, w), dtype=np.float32)
+    uv = np.stack([(xs + 0.5) / w, (ys + 0.5) / h], axis=0)
+    aspect = w / float(h)
+    col = np.zeros((3, h, w), dtype=np.float32)
+    zenith = lerp(np.array([0.015, 0.020, 0.055], np.float32), np.array([0.004, 0.006, 0.016], np.float32), woods)
+    dusk = lerp(np.array([0.16, 0.055, 0.045], np.float32), np.array([0.035, 0.020, 0.028], np.float32), woods)
+    horizon = lerp(np.array([0.42, 0.18, 0.07], np.float32), np.array([0.08, 0.045, 0.03], np.float32), woods)
+    sky = lerp(zenith[:, None, None], dusk[:, None, None], smoothstep(0.05, 0.48, uv[1]))
+    sky = lerp(sky, horizon[:, None, None], smoothstep(0.42, 0.74, uv[1]))
+    sky = sky + horizon[:, None, None] * 0.15 * np.exp(-np.abs(uv[1] - 0.70) / 0.08)
+    col[:] = sky
+    if stars > 0.02:
+        sp = np.stack([(uv[0] - 0.5) * aspect, uv[1] - 0.42], axis=0)
+        mask = uv[1] < 0.64
+        tint = np.array([0.86, 0.90, 1.0], np.float32)
+        before = col.copy()
+        add_stars(col, sp, h, time, 0.0, 0.0, np.zeros(2, np.float32), 0.35, 0.65, tint,
+                  ((64.0, 0.85, 0.045 * stars),), (0.0, 0.0), True)
+        for c in range(3):
+            col[c] = np.where(mask, col[c], before[c])
+    far = tree_line(uv[0], uv[1], 0.66, 4.6, 2.0, lerp(0.18, 0.36, woods), h, 0.0)
+    mid = tree_line(uv[0], uv[1], 0.80, 7.5, 6.5, lerp(0.12, 0.22, woods), h, 1.0)
+    near = tree_line(uv[0], uv[1], 0.92, 12.0, 11.0, lerp(0.08, 0.15, woods), h, 1.0)
+    far_col = lerp(np.array([0.035, 0.028, 0.032], np.float32), np.array([0.010, 0.012, 0.014], np.float32), woods)
+    for c in range(3):
+        col[c] = lerp(col[c], far_col[c], far * 0.94)
+        col[c] = lerp(col[c], 0.008 if c == 0 else 0.009 if c == 1 else 0.010, mid)
+        col[c] = lerp(col[c], 0.0025 if c == 0 else 0.0030 if c == 1 else 0.0035, near)
+    mist_n = fbm2(uv[0] * 2.2 + time * speed * 0.012, np.full_like(uv[0], 0.35))
+    mist_a = smoothstep(0.64, 1.0, uv[1]) * (0.50 + 0.50 * mist_n) * mist * 0.50
+    col[0] += 0.11 * mist_a
+    col[1] += 0.12 * mist_a
+    col[2] += 0.13 * mist_a
+    tint = np.maximum(hex_rgb(color), 0.02)
+    add_flies(col, uv, 22.0, 0.42, density, tint * 0.75, time, speed, 0.0, h)
+    add_flies(col, uv, 10.0, 1.0, density, tint, time, speed, 0.0, h)
+    print("  fireflies scene", scene_stats(col))
+    enc = grade(tonemap(col), uv, w, h, look)
+    return np.clip(enc * 255.0 + 0.5, 0, 255).astype(np.uint8).transpose(1, 2, 0)
+
+
+def render_snow(w, h, preset, time):
+    speed, density, wind, backdrop, color, look = preset
+    ys, xs = np.indices((h, w), dtype=np.float32)
+    uv = np.stack([(xs + 0.5) / w, (ys + 0.5) / h], axis=0)
+    aspect = w / float(h)
+    col = np.zeros((3, h, w), dtype=np.float32)
+    sky = lerp(np.array([0.012, 0.016, 0.040], np.float32)[:, None, None],
+               np.array([0.028, 0.032, 0.055], np.float32)[:, None, None], smoothstep(0.0, 1.0, uv[1]))
+    col[:] = sky
+    if backdrop < 0.5:
+        sp = np.stack([(uv[0] - 0.5) * aspect, uv[1] - 0.45], axis=0)
+        before = col.copy()
+        add_stars(col, sp, h, time, 0.0, 0.0, np.zeros(2, np.float32), 0.25, 0.55,
+                  np.array([0.90, 0.93, 1.0], np.float32), ((58.0, 0.9, 0.06),), (0.0, 0.0), True)
+        for c in range(3):
+            col[c] = np.where(uv[1] < 0.72, col[c], before[c])
+    elif backdrop < 1.5:
+        sp = np.stack([(uv[0] - 0.5) * aspect, uv[1] - 0.40], axis=0)
+        before = col.copy()
+        add_stars(col, sp, h, time, 0.0, 0.0, np.zeros(2, np.float32), 0.2, 0.4,
+                  np.array([0.85, 0.90, 1.0], np.float32), ((70.0, 0.7, 0.03),), (0.0, 0.0), True)
+        for c in range(3):
+            col[c] = np.where(uv[1] < 0.55, col[c], before[c])
+        far = tree_line(uv[0], uv[1], 0.64, 5.2, 3.0, 0.28, h, 0.0)
+        near = tree_line(uv[0], uv[1], 0.82, 9.0, 9.0, 0.18, h, 1.0)
+        for c in range(3):
+            col[c] = lerp(col[c], np.array([0.012, 0.016, 0.018], np.float32)[c], far)
+            col[c] = lerp(col[c], np.array([0.003, 0.004, 0.005], np.float32)[c], near)
+        ground = smoothstep(0.78, 0.95, uv[1]) * (1.0 - near)
+        col[0] = lerp(col[0], 0.045, ground)
+        col[1] = lerp(col[1], 0.050, ground)
+        col[2] = lerp(col[2], 0.058, ground)
+    else:
+        col[:] = np.array([0.015, 0.008, 0.005], np.float32)[:, None, None]
+        c1 = uv - np.array([0.36, 0.46], np.float32)[:, None, None]
+        c2 = uv - np.array([0.66, 0.58], np.float32)[:, None, None]
+        b1 = np.exp(-np.sum(c1 * c1, axis=0) / 0.010)
+        b2 = np.exp(-np.sum(c2 * c2, axis=0) / 0.006)
+        col[0] += 0.95 * b1 * 0.85 + 1.0 * b2 * 0.55
+        col[1] += 0.48 * b1 * 0.85 + 0.72 * b2 * 0.55
+        col[2] += 0.16 * b1 * 0.85 + 0.38 * b2 * 0.55
+        frame = smoothstep(0.0, 0.07, uv[0]) * smoothstep(1.0, 0.93, uv[0])
+        frame = frame * smoothstep(0.0, 0.08, uv[1]) * smoothstep(1.0, 0.90, uv[1])
+        col *= lerp(0.05, 1.0, frame)
+    tint = np.maximum(hex_rgb(color), 0.2)
+    add_snow(col, uv, 36.0, 0.12, density, wind, time, speed, tint, 0.70, h, 0.0)
+    add_snow(col, uv, 18.0, 0.48, density, wind, time, speed, tint, 1.0, h, 0.0)
+    add_snow(col, uv, 7.0, 1.0, density, wind, time, speed, tint, 1.15, h, 0.0)
+    print("  snow scene", scene_stats(col))
+    enc = grade(tonemap(col), uv, w, h, look)
+    return np.clip(enc * 255.0 + 0.5, 0, 255).astype(np.uint8).transpose(1, 2, 0)
+
+
 def presets():
     night = (1.0, 1.0, 0.18, False)
     stars = {
@@ -601,7 +793,17 @@ def presets():
         "polar": (0.24, 0.78, 0.70, True, False, 0x86FFE0, 0x6A4BFF, (0.96, 1.1, 0.30, False)),
         "horizon": (0.26, 0.85, 0.48, True, True, 0x3CFF78, 0xFF4B7A, (0.92, 1.0, 0.36, True)),
     }
-    return stars, aurora
+    fireflies = {
+        "summer-dusk": (0.32, 1.0, 0.55, 0.35, 0.45, 0xD2F26A, (1.0, 1.05, 0.28, False)),
+        "deep-woods": (0.22, 0.72, 0.82, 0.0, 0.95, 0xB6E86A, (0.82, 0.95, 0.42, True)),
+        "meadow": (0.38, 1.45, 0.32, 0.9, 0.12, 0xE8FF8A, (1.05, 1.15, 0.20, False)),
+    }
+    snow = {
+        "night-sky": (0.40, 1.0, 0.22, 0, 0xF7F8FF, (1.0, 1.0, 0.22, False)),
+        "pine-forest": (0.48, 1.15, 0.38, 1, 0xF4F7FF, (0.96, 0.9, 0.30, True)),
+        "window": (0.28, 0.75, 0.10, 2, 0xFFF4E4, (1.0, 1.05, 0.18, False)),
+    }
+    return stars, aurora, fireflies, snow
 
 
 def main():
@@ -613,15 +815,28 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     w = max(16, int(W0 * args.scale))
     h = max(16, int(H0 * args.scale))
-    stars, aurora = presets()
+    stars, aurora, fireflies, snow = presets()
     jobs = [("stars", k, v) for k, v in stars.items()] + [("aurora", k, v) for k, v in aurora.items()]
+    jobs += [("fireflies", k, v) for k, v in fireflies.items()] + [("snow", k, v) for k, v in snow.items()]
     if args.only:
         jobs = [j for j in jobs if args.only in f"{j[0]}-{j[1]}"]
     for kind, name, preset in jobs:
-        time = 0.48 if kind == "stars" else 6.5
+        time = 4.2 if kind == "fireflies" else 3.1 if kind == "snow" else 0.48 if kind == "stars" else 6.5
         print(f"rendering {kind} {name} {w}x{h}", flush=True)
-        img = render_stars(w, h, preset, time) if kind == "stars" else render_aurora(w, h, preset, time)
-        path = os.path.join(args.out, f"{kind}-{name}.png")
+        if kind == "stars":
+            img = render_stars(w, h, preset, time)
+        elif kind == "aurora":
+            img = render_aurora(w, h, preset, time)
+        elif kind == "fireflies":
+            img = render_fireflies(w, h, preset, time)
+        else:
+            img = render_snow(w, h, preset, time)
+        filename = f"{kind}-{name}.png"
+        if kind == "fireflies" and name == "summer-dusk":
+            filename = "fireflies.png"
+        elif kind == "snow" and name == "night-sky":
+            filename = "snow.png"
+        path = os.path.join(args.out, filename)
         Image.fromarray(img, "RGB").save(path, optimize=True)
         print(f"  wrote {path}", flush=True)
 
