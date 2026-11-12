@@ -783,17 +783,25 @@ struct GalleryUi {
         if (std::fabs(g.m_host->settings().lava.speed - expect) > 0.05f)
             return fail("slider did not change Lava speed");
 
+        // The swatch search above leaves the side pane scrolled. Measuring from
+        // that leftover offset and then assigning 36 reports a miss even though
+        // the row tracks the scroll. Zero both, then apply the deltas. This is
+        // the same for the public gallery (6 cards) and the private one (8).
         g.m_gridScroll = 0;
+        g.m_sideScroll = 0;
         Layout scrolled = build(g, 860, 420);
         const float y0 = scrolled.cards.empty() ? 0 : scrolled.cards[0].body.y;
         g.m_gridScroll = 48;
         scrolled = build(g, 860, 420);
         if (!scrolled.cards.empty() && std::fabs((y0 - 48.0f) - scrolled.cards[0].body.y) > 0.5f)
             return fail("grid scroll");
-        const float sy0 = scrolled.sliders.empty() ? 0 : scrolled.sliders[0].row.y;
+        g.m_sideScroll = 0;
+        scrolled = build(g, 860, 420);
+        if (scrolled.sliders.empty()) return fail("settings scroll");
+        const float sy0 = scrolled.sliders[0].row.y;
         g.m_sideScroll = 36;
         scrolled = build(g, 860, 420);
-        if (!scrolled.sliders.empty() && std::fabs((sy0 - 36.0f) - scrolled.sliders[0].row.y) > 0.5f)
+        if (scrolled.sliders.empty() || std::fabs((sy0 - 36.0f) - scrolled.sliders[0].row.y) > 0.5f)
             return fail("settings scroll");
 
         auto gridMax = [](const Layout& L) {
@@ -805,6 +813,37 @@ struct GalleryUi {
         // Retro is one card, so an 860x420 grid does not overflow. A scrollbar there is a bug.
         if (gridMax(scrolled) < 1.0f && scrolled.gridThumb.h > 1.0f) return fail("grid thumb without overflow");
         if (sideMax(scrolled) < 1.0f && scrolled.sideThumb.h > 1.0f) return fail("side thumb without overflow");
+
+        // The fullest group is two cards in the public build and three once
+        // Code Ape and Slow Myco join Matrix Rain. Scroll has to move that
+        // grid and its settings by the same deltas.
+        int fullest = retroGroup;
+        int fullestN = 0;
+        for (int gi = 0; gi < (int)names.size(); ++gi) {
+            const int n = (int)cardsIn(g, gi).size();
+            if (n > fullestN) {
+                fullestN = n;
+                fullest = gi;
+            }
+        }
+        if (fullestN < 1) return fail("no cards to scroll");
+        Hit full{};
+        full.kind = HitGroup;
+        full.index = fullest;
+        activate(g, full);
+        g.m_gridScroll = 0;
+        g.m_sideScroll = 0;
+        Layout fullL = build(g, 860, 420);
+        if ((int)fullL.cards.size() != fullestN) return fail("fullest group card count");
+        const float fy0 = fullL.cards[0].body.y;
+        if (fullL.sliders.empty()) return fail("settings scroll");
+        const float fs0 = fullL.sliders[0].row.y;
+        g.m_gridScroll = 48;
+        g.m_sideScroll = 36;
+        fullL = build(g, 860, 420);
+        if (std::fabs((fy0 - 48.0f) - fullL.cards[0].body.y) > 0.5f) return fail("grid scroll");
+        if (fullL.sliders.empty() || std::fabs((fs0 - 36.0f) - fullL.sliders[0].row.y) > 0.5f)
+            return fail("settings scroll");
 
         int matrixGroup = -1;
         for (int i = 0; i < (int)names.size(); ++i)

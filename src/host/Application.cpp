@@ -1471,8 +1471,14 @@ void Application::tickSelftest() {
         if (id == "fireflies" || id == "snow") {
             const int pixels = std::max(1, sampled);
             cover = (float)lit / (float)pixels;
-            // Glows and flakes should cover part of the frame, not a flat field or noise.
-            coverOk = cover >= 0.002f && cover <= 0.40f;
+            // Flakes and fireflies speckle a dark frame, so 40% is a blown-out field.
+            // Window is the room and the view: the lamp-lit wall and the night
+            // through the glass sit above the 0.02 floor on purpose. That measures
+            // about 0.53 at 16:9 and 0.63 at 1920x1200. A white wall of snow
+            // would be near 1, and the graded mean would leave the art-direction range.
+            const bool window = id == "snow" && pname && std::strcmp(pname, "Window") == 0;
+            coverOk = window ? (cover >= 0.35f && cover <= 0.78f)
+                             : (cover >= 0.002f && cover <= 0.40f);
         }
         const bool pass = gained >= 2 && shaderReady && content && edgeOk && coverOk && m_stSwitchMs <= 250.0;
         if (id == "starfield") {

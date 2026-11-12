@@ -364,6 +364,17 @@ def run(scale=0.5):
             failures.append(f"{name} C6 mean {mean:.3f} not in {lo}-{hi}")
         else:
             print(f"    mean {mean:.3f} spread {spread:.3f}")
+        # Same lit-fraction the desktop selftest prints as cover=. Flakes and
+        # fireflies stay under 40%. Window is a room looking out, so more of the
+        # frame is above the noise floor without being a wall of snow.
+        cover = float((luma >= 0.02).mean())
+        if name == "snow-window":
+            if not (0.35 <= cover <= 0.78):
+                failures.append(f"{name} cover {cover:.3f} not in 0.35-0.78")
+            else:
+                print(f"    cover {cover:.3f}")
+        elif not (0.002 <= cover <= 0.40):
+            failures.append(f"{name} cover {cover:.3f} not in 0.002-0.40")
 
         blob = _blobs(luma, 0.02 if name.startswith("fireflies") else 0.035)
         if name.startswith("fireflies"):
