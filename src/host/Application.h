@@ -81,6 +81,7 @@ private:
     void handleIpc(const WallpaperHost::IpcMessage& msg);
     void tickSelftest();
     void notePresetSwitch(const std::string& id, int preset);
+    void awaitSwitchReady(const std::string& id, int preset);
     void advanceSelftestPreset(const std::vector<EffectInfo>& list);
     void finishSelftest(bool pass, const char* extra);
     void writeSelftestReport() const;

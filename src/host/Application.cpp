@@ -5,6 +5,7 @@
 #include "core/Util.h"
 #include "effect/IEffect.h"
 #include "effect/Presets.h"
+#include "gfx/Plates.h"
 #include "effects/LavaField.h"
 #include "host/Autostart.h"
 #include "host/DesktopIcons.h"
@@ -742,6 +743,7 @@ void Application::renderFrame(float dt, double time) {
     ctx.lookX = m_lookX * 0.045f;
     ctx.lookY = m_lookY * 0.035f;
     m_effect->update(dt, time);
+    m_renderer.advancePlateFade(dt);
     m_renderer.beginGpuTime();
     const char* eid = m_effect->id();
     const bool usesPlates = eid && (std::strcmp(eid, "starfield") == 0 || std::strcmp(eid, "aurora") == 0 ||
@@ -1118,6 +1120,9 @@ int Application::run() {
         if (dt > 0.0f && std::fabs(dt - ideal) < ideal * 0.30f) dt = ideal;
         m_time += dt;
         renderFrame(dt, m_time);
+        // Not during a measured selftest window: the first draw of a sky shader
+        // is the driver's compile, and that hitch must not land on the clock.
+        if (!m_selftest || !m_stWindow) m_renderer.pumpSkyWarmup();
         pumpThumbs();
         if (m_selftest) tickSelftest();
 
@@ -1242,6 +1247,35 @@ bool presetUsesPlates(const std::string& id, const char* name) {
     if (id == "aurora") return std::strcmp(name, "Classic") == 0;
     if (id == "fireflies") return std::strcmp(name, "Summer dusk") == 0;
     if (id == "snow") return std::strcmp(name, "Pine forest") == 0;
+    return false;
+}
+
+bool platePresetId(const std::string& id, int preset, const wchar_t** effect, const wchar_t** name) {
+    if (id == "starfield" && preset == 0) {
+        *effect = L"stars";
+        *name = L"still-night";
+        return true;
+    }
+    if (id == "starfield" && preset == 1) {
+        *effect = L"stars";
+        *name = L"milky-way";
+        return true;
+    }
+    if (id == "aurora" && preset == 0) {
+        *effect = L"aurora";
+        *name = L"classic";
+        return true;
+    }
+    if (id == "fireflies" && preset == 0) {
+        *effect = L"fireflies";
+        *name = L"summer-dusk";
+        return true;
+    }
+    if (id == "snow" && preset == 1) {
+        *effect = L"snow";
+        *name = L"pine-forest";
+        return true;
+    }
     return false;
 }
 
@@ -1594,7 +1628,33 @@ void Application::tickSelftest() {
     }
 }
 
+void Application::awaitSwitchReady(const std::string& id, int preset) {
+    if (!m_renderer.device()) return;
+    const wchar_t* plateEffect = nullptr;
+    const wchar_t* platePreset = nullptr;
+    const bool wantPlate = platePresetId(id, preset, &plateEffect, &platePreset);
+    const ULONGLONG t0 = GetTickCount64();
+    while (GetTickCount64() - t0 < 8000) {
+        const bool plates = plateUploadsIdle(m_renderer.device()) &&
+                            (!wantPlate || plateSetReady(m_renderer.device(), plateEffect, platePreset));
+        const bool shader = m_renderer.skyShaderWarmed(id.c_str());
+        if (plates && shader) {
+            const ULONGLONG waited = GetTickCount64() - t0;
+            if (waited > 30)
+                LOG_INFO("Switch prep %s/%d ready in %llu ms", id.c_str(), preset, (unsigned long long)waited);
+            return;
+        }
+        // Decode stays on the worker. This loop only uploads a layer and draws
+        // a shader that just finished compiling, and none of it is Switch ms.
+        renderFrame(1.0f / 30.0f, m_time);
+        m_time += 1.0 / 30.0;
+        m_renderer.pumpSkyWarmup();
+    }
+    LOG_INFO("Switch prep %s/%d timed out", id.c_str(), preset);
+}
+
 void Application::notePresetSwitch(const std::string& id, int preset) {
+    awaitSwitchReady(id, preset);
     LARGE_INTEGER freq{}, a{}, b{};
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&a);

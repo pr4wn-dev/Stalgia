@@ -288,75 +288,7 @@ bool g_started = false;
 bool g_stop = false;
 std::vector<PlateSet> g_sets;
 
-bool uploadSetLocked(PlateSet& set, ID3D11Device* device) {
-    if (!device) return false;
-    if (set.uploadedDevice == device) return true;
-    for (auto& srv : set.srv) srv.reset();
-    set.uploadedDevice = nullptr;
-    if (set.mask <= 0.0f) {
-        set.uploadedDevice = device;
-        return true;
-    }
-    bool any = false;
-    for (int i = 0; i < 4; ++i) {
-        if (set.cpu[i].bgra.empty()) continue;
-        any = true;
-        ID3D11ShaderResourceView* srv = nullptr;
-        if (!upload(device, set.cpu[i].bgra, set.cpu[i].w, set.cpu[i].h, &srv) || !srv) return false;
-        set.srv[i] = ComPtr<ID3D11ShaderResourceView>(srv);
-    }
-    if (!any) return false;
-    set.uploadedDevice = device;
-    for (auto& cpu : set.cpu) {
-        cpu.bgra.clear();
-        cpu.bgra.shrink_to_fit();
-    }
-    LOG_INFO("Plate uploaded %ls", set.key.c_str());
-    return true;
-}
-
-void workerMain() {
-    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    const auto t0 = std::chrono::steady_clock::now();
-    for (;;) {
-        std::wstring effect, preset;
-        size_t index = 0;
-        {
-            std::lock_guard<std::mutex> lock(g_mu);
-            if (g_stop) break;
-            index = g_sets.size();
-            for (size_t i = 0; i < g_sets.size(); ++i) {
-                if (!g_sets[i].decoded) {
-                    index = i;
-                    effect = g_sets[i].effect;
-                    preset = g_sets[i].preset;
-                    break;
-                }
-            }
-            if (index == g_sets.size()) break;
-        }
-        CpuLayer cpu[4];
-        float mask = 0.0f;
-        decodePlateCpu(effect.c_str(), preset.c_str(), cpu, mask);
-        {
-            std::lock_guard<std::mutex> lock(g_mu);
-            if (g_stop || index >= g_sets.size()) break;
-            if (!g_sets[index].decoded) {
-                for (int i = 0; i < 4; ++i) g_sets[index].cpu[i] = std::move(cpu[i]);
-                g_sets[index].mask = mask;
-                g_sets[index].decoded = true;
-            }
-        }
-        g_cv.notify_all();
-    }
-    const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    LOG_INFO("Plate preload finished in %.0f ms", ms);
-    if (SUCCEEDED(com)) CoUninitialize();
-}
-
-void preloadImpl() {
-    std::lock_guard<std::mutex> lock(g_mu);
-    if (g_started) return;
+void queueBuiltinsLocked() {
     const wchar_t* jobs[][2] = {
         {L"stars", L"still-night"},
         {L"stars", L"milky-way"},
@@ -377,9 +309,71 @@ void preloadImpl() {
         set.preset = job[1];
         g_sets.push_back(std::move(set));
     }
+}
+
+void workerMain() {
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const auto t0 = std::chrono::steady_clock::now();
+    bool logged = false;
+    for (;;) {
+        std::wstring effect, preset;
+        size_t index = 0;
+        {
+            std::unique_lock<std::mutex> lock(g_mu);
+            for (;;) {
+                if (g_stop) break;
+                index = g_sets.size();
+                for (size_t i = 0; i < g_sets.size(); ++i) {
+                    if (!g_sets[i].decoded) {
+                        index = i;
+                        effect = g_sets[i].effect;
+                        preset = g_sets[i].preset;
+                        break;
+                    }
+                }
+                if (index != g_sets.size()) break;
+                if (!logged && !g_sets.empty()) {
+                    const auto ms =
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                    LOG_INFO("Plate preload finished in %.0f ms", ms);
+                    logged = true;
+                }
+                g_cv.wait(lock);
+            }
+            if (g_stop) break;
+        }
+        CpuLayer cpu[4];
+        float mask = 0.0f;
+        decodePlateCpu(effect.c_str(), preset.c_str(), cpu, mask);
+        {
+            std::lock_guard<std::mutex> lock(g_mu);
+            if (g_stop) break;
+            if (index >= g_sets.size()) continue;
+            if (!g_sets[index].decoded) {
+                for (int i = 0; i < 4; ++i) g_sets[index].cpu[i] = std::move(cpu[i]);
+                g_sets[index].mask = mask;
+                g_sets[index].decoded = true;
+            }
+        }
+        g_cv.notify_all();
+    }
+    if (SUCCEEDED(com)) CoUninitialize();
+}
+
+void ensureWorkerLocked() {
+    if (g_started) return;
+    queueBuiltinsLocked();
     g_stop = false;
     g_started = true;
     g_worker = std::thread(workerMain);
+}
+
+void preloadImpl() {
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        ensureWorkerLocked();
+    }
+    g_cv.notify_all();
 }
 
 void releaseImpl() {
@@ -395,12 +389,48 @@ void releaseImpl() {
     g_stop = false;
 }
 
+size_t findSetLocked(const std::wstring& key) {
+    for (size_t i = 0; i < g_sets.size(); ++i)
+        if (g_sets[i].key == key) return i;
+    return g_sets.size();
+}
+
+void enqueueLocked(const std::wstring& key, const wchar_t* effect, const wchar_t* preset) {
+    if (findSetLocked(key) != g_sets.size()) return;
+    PlateSet set;
+    set.key = key;
+    set.effect = effect;
+    set.preset = preset;
+    g_sets.push_back(std::move(set));
+}
+
+// One 4K layer per call. A preset change must not stall on the whole set.
 void serviceImpl(ID3D11Device* device) {
     if (!device) return;
     std::lock_guard<std::mutex> lock(g_mu);
     for (auto& set : g_sets) {
         if (!set.decoded || set.uploadedDevice == device) continue;
-        uploadSetLocked(set, device);
+        if (set.mask <= 0.0f) {
+            set.uploadedDevice = device;
+            return;
+        }
+        for (int i = 0; i < 4; ++i) {
+            if (set.srv[i] || set.cpu[i].bgra.empty()) continue;
+            ID3D11ShaderResourceView* srv = nullptr;
+            if (!upload(device, set.cpu[i].bgra, set.cpu[i].w, set.cpu[i].h, &srv) || !srv) return;
+            set.srv[i] = ComPtr<ID3D11ShaderResourceView>(srv);
+            set.cpu[i].bgra.clear();
+            set.cpu[i].bgra.shrink_to_fit();
+            bool more = false;
+            for (int j = 0; j < 4; ++j)
+                if (!set.srv[j] && !set.cpu[j].bgra.empty()) more = true;
+            if (!more) {
+                set.uploadedDevice = device;
+                LOG_INFO("Plate uploaded %ls", set.key.c_str());
+            }
+            return;
+        }
+        set.uploadedDevice = device;
         return;
     }
 }
@@ -413,69 +443,79 @@ bool acquireImpl(ID3D11Device* device, const wchar_t* effect, const wchar_t* pre
     const std::wstring key = cacheKey(effect, preset);
     if (key.empty()) return false;
 
-    std::unique_lock<std::mutex> lock(g_mu);
-    if (!g_started) {
-        // Preload was not armed (no device yet). Decode this one set here.
-        lock.unlock();
-        CpuLayer cpu[4];
-        float mask = 0.0f;
-        if (!decodePlateCpu(effect, preset, cpu, mask)) return false;
-        for (int i = 0; i < 4; ++i) {
-            if (cpu[i].bgra.empty()) continue;
-            ID3D11ShaderResourceView* srv = nullptr;
-            if (!upload(device, cpu[i].bgra, cpu[i].w, cpu[i].h, &srv) || !srv) continue;
-            out.layer[i] = ComPtr<ID3D11ShaderResourceView>(srv);
+    bool wake = false;
+    bool ok = false;
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        if (!g_started) {
+            ensureWorkerLocked();
+            wake = true;
         }
-        out.mask = mask;
-        return out.mask > 0.0f;
-    }
-    size_t index = g_sets.size();
-    for (size_t i = 0; i < g_sets.size(); ++i) {
-        if (g_sets[i].key == key) {
-            index = i;
-            break;
-        }
-    }
-    if (index == g_sets.size()) {
-        PlateSet set;
-        set.key = key;
-        set.effect = effect;
-        set.preset = preset;
-        g_sets.push_back(std::move(set));
-        index = g_sets.size() - 1;
-        // The worker exits once every preloaded set is decoded. A late preset
-        // (an external override) decodes here, still off the switch clock if
-        // the caller asked during an earlier frame.
-        lock.unlock();
-        CpuLayer cpu[4];
-        float mask = 0.0f;
-        decodePlateCpu(effect, preset, cpu, mask);
-        lock.lock();
-        if (index < g_sets.size() && !g_sets[index].decoded) {
-            for (int i = 0; i < 4; ++i) g_sets[index].cpu[i] = std::move(cpu[i]);
-            g_sets[index].mask = mask;
-            g_sets[index].decoded = true;
+        size_t index = findSetLocked(key);
+        if (index == g_sets.size()) {
+            // Never decode here. The worker picks the set up, and this frame
+            // draws without the photo.
+            enqueueLocked(key, effect, preset);
+            out.pending = true;
+            wake = true;
+        } else {
+            PlateSet& set = g_sets[index];
+            if (set.decoded && set.mask <= 0.0f) {
+                // This preset has no plates.
+            } else if (!set.decoded || set.uploadedDevice != device) {
+                out.pending = true;
+                wake = !set.decoded;
+            } else {
+                for (int i = 0; i < 4; ++i) {
+                    if (!set.srv[i]) continue;
+                    set.srv[i]->AddRef();
+                    out.layer[i] = ComPtr<ID3D11ShaderResourceView>(set.srv[i].get());
+                }
+                out.mask = set.mask;
+                ok = out.mask > 0.0f;
+            }
         }
     }
-    if (index >= g_sets.size() || !g_sets[index].decoded) {
-        out.pending = true;
-        return false;
+    if (wake) g_cv.notify_all();
+    return ok;
+}
+
+bool plateSetReadyImpl(ID3D11Device* device, const wchar_t* effect, const wchar_t* preset) {
+    if (!device || !effect || !preset) return true;
+    const std::wstring key = cacheKey(effect, preset);
+    if (key.empty()) return true;
+    bool wake = false;
+    bool ready = false;
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        if (!g_started) {
+            ensureWorkerLocked();
+            wake = true;
+        }
+        const size_t index = findSetLocked(key);
+        if (index == g_sets.size()) {
+            enqueueLocked(key, effect, preset);
+            wake = true;
+        } else if (g_sets[index].decoded && g_sets[index].mask <= 0.0f) {
+            ready = true;
+        } else {
+            ready = g_sets[index].decoded && g_sets[index].uploadedDevice == device;
+            wake = !g_sets[index].decoded;
+        }
     }
-    if (g_sets[index].mask <= 0.0f) return false;
-    // Uploading 4K layers is the frame loop's job, one set per frame, so a
-    // preset change never waits on the GPU upload either.
-    if (g_sets[index].uploadedDevice != device) {
-        out.pending = true;
-        return false;
+    if (wake) g_cv.notify_all();
+    return ready;
+}
+
+bool plateUploadsIdleImpl(ID3D11Device* device) {
+    if (!device) return false;
+    std::lock_guard<std::mutex> lock(g_mu);
+    if (!g_started) return false;
+    for (const auto& set : g_sets) {
+        if (!set.decoded) return false;
+        if (set.mask > 0.0f && set.uploadedDevice != device) return false;
     }
-    PlateSet& set = g_sets[index];
-    for (int i = 0; i < 4; ++i) {
-        if (!set.srv[i]) continue;
-        set.srv[i]->AddRef();
-        out.layer[i] = ComPtr<ID3D11ShaderResourceView>(set.srv[i].get());
-    }
-    out.mask = set.mask;
-    return out.mask > 0.0f;
+    return true;
 }
 
 bool loadResourceLayer(IWICImagingFactory* factory, int id, IStream** out) {
@@ -500,3 +540,9 @@ void servicePlateUploads(ID3D11Device* device) { serviceImpl(device); }
 bool acquirePlateLayers(ID3D11Device* device, const wchar_t* effect, const wchar_t* preset, PlateLayers& out) {
     return acquireImpl(device, effect, preset, out);
 }
+
+bool plateSetReady(ID3D11Device* device, const wchar_t* effect, const wchar_t* preset) {
+    return plateSetReadyImpl(device, effect, preset);
+}
+
+bool plateUploadsIdle(ID3D11Device* device) { return plateUploadsIdleImpl(device); }

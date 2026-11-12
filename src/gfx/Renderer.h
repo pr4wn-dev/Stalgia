@@ -74,6 +74,13 @@ public:
     // constants is the layer mask (0 when no plates are on disk).
     void bindPlates(const wchar_t* effect, const wchar_t* preset);
     float plateMask() const { return m_plateMask; }
+    // 0 while a plate is fading in over the procedural frame, then 1.
+    void advancePlateFade(float dt);
+    float plateFade() const { return m_plateFade; }
+    // Draws one sky shader as soon as its bytecode is ready, so the driver's
+    // first-use compile does not land on a preset change.
+    bool skyShaderWarmed(const char* effectId) const;
+    void pumpSkyWarmup();
     // Thumbnails bind their own plates through the same slots. Capture and
     // restore so a thumb cannot leave the wallpaper sampling another preset.
     struct PlateBinding {
@@ -81,6 +88,8 @@ public:
         std::wstring key;
         ID3D11Device* device = nullptr;
         float mask = 0.0f;
+        float fade = 1.0f;
+        std::wstring pendingKey;
         void release();
         ~PlateBinding() { release(); }
         PlateBinding() = default;
@@ -99,6 +108,9 @@ public:
                 other.device = nullptr;
                 mask = other.mask;
                 other.mask = 0.0f;
+                fade = other.fade;
+                other.fade = 1.0f;
+                pendingKey = std::move(other.pendingKey);
             }
             return *this;
         }
@@ -204,8 +216,16 @@ private:
     ComPtr<ID3D11SamplerState> m_noiseSamp;
     ComPtr<ID3D11ShaderResourceView> m_plateSrv[4];
     std::wstring m_plateKey;
+    std::wstring m_platePendingKey;
     ID3D11Device* m_plateDevice = nullptr;
     float m_plateMask = 0.0f;
+    float m_plateFade = 1.0f;
+    ComPtr<ID3D11BlendState> m_plateFadeBlend;
+    ID3D11BlendState* m_blendOverride = nullptr;
+    float m_blendFactor = 1.0f;
+    bool m_skyWarmed[4] = {};
+    ComPtr<ID3D11Texture2D> m_warmTex;
+    ComPtr<ID3D11RenderTargetView> m_warmRtv;
     ComPtr<ID3D11Texture2D> m_lumaStage;
     ComPtr<ID3D11Texture2D> m_captureStage;
     struct GpuSlot {
